@@ -1,0 +1,11 @@
+node_modules/
+dist/
+src-tauri/target/
+*.vault
+*.db
+*.db-wal
+*.db-shm
+*.pfx
+*.key
+.env
+.env.*
