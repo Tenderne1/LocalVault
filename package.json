@@ -1,0 +1,32 @@
+{
+  "name": "localvault",
+  "version": "1.7.6",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "build:windows": "powershell -ExecutionPolicy Bypass -File ./scripts/build-windows.ps1",
+    "build:portable": "powershell -ExecutionPolicy Bypass -File ./scripts/build-portable.ps1",
+    "clean:release": "powershell -ExecutionPolicy Bypass -File ./scripts/clean-release.ps1"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.8.0",
+    "@tauri-apps/plugin-dialog": "^2.7.3",
+    "@tauri-apps/plugin-updater": "^2.11.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "@tauri-apps/plugin-opener": "^2.4.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.8.0",
+    "@types/react": "^19.1.10",
+    "@types/react-dom": "^19.1.7",
+    "@vitejs/plugin-react": "^5.0.2",
+    "typescript": "^5.9.2",
+    "vite": "^7.3.6"
+  }
+}
