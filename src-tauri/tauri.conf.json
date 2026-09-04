@@ -1,0 +1,55 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "LocalVault",
+  "version": "1.7.8",
+  "identifier": "com.localvault.app",
+  "build": {
+    "beforeDevCommand": "npm.cmd run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm.cmd run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "LocalVault",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 1000,
+        "minHeight": 680,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:;"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis",
+      "msi"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.ico"
+    ],
+    "category": "Utility",
+    "publisher": "LocalVault Project",
+    "shortDescription": "Local-first password manager",
+    "longDescription": "LocalVault is a local-first password manager with encrypted local storage.",
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEyMkIyNzE1REVCNjI3QjcKUldTM0o3YmVGU2NyRXE3bDVocGc1Rm42dE1PZFJkTjNqWUxaZDFmZU40TExnc2hRd083aDBUdFgK",
+      "endpoints": [
+        "https://github.com/Tenderne1/LocalVault/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}
