@@ -1,0 +1,20 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "LocalVault desktop capabilities",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "updater:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        {"url": "http://*"},
+        {"url": "https://*"}
+      ]
+    },
+    "opener:deny-open-path",
+    "opener:deny-reveal-item-in-dir"
+  ]
+}

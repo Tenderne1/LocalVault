@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"LocalVault desktop capabilities","local":true,"windows":["main"],"permissions":["core:default","dialog:default","updater:default",{"identifier":"opener:allow-open-url","allow":[{"url":"http://*"},{"url":"https://*"}]},"opener:deny-open-path","opener:deny-reveal-item-in-dir"]}}
