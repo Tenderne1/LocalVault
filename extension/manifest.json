@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "LocalVault-Fill",
+  "version": "1.9.3",
+  "description": "LocalVault 自动填充扩展：与本地 LocalVault 填充服务配对后，在密码框旁提供一键填充。密码仅在点击填充的瞬间下发，扩展不保存任何密码。",
+  "permissions": ["storage", "activeTab", "scripting", "webNavigation", "tabs", "alarms"],
+  "host_permissions": [
+    "http://127.0.0.1:38527/*",
+    "https://*/*",
+    "http://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*/*", "http://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_about_blank": true
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "LocalVault 填充"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

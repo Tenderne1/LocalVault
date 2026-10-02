@@ -1,0 +1,22 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { width: 300px; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; padding: 14px; color: #1f2328; background: #f9fafb; }
+.head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.head .logo { font-size: 24px; }
+.head b { display: block; font-size: 14px; }
+.head small { display: block; font-size: 11px; color: #57606a; }
+.dot { width: 10px; height: 10px; border-radius: 50%; margin-left: auto; }
+.dot.on { background: #35c759; box-shadow: 0 0 6px #35c759; }
+.dot.off { background: #d0d7de; }
+.card { background: #fff; border: 1px solid #e5e8eb; border-radius: 10px; padding: 12px; margin-bottom: 10px; }
+.desc { font-size: 12px; color: #57606a; line-height: 1.6; margin-bottom: 8px; }
+input { width: 100%; padding: 9px 10px; border: 1px solid #d0d7de; border-radius: 8px; font-size: 15px; letter-spacing: 4px; text-align: center; margin-bottom: 8px; }
+input:focus { outline: 2px solid #2563eb33; border-color: #2563eb; }
+button { width: 100%; padding: 9px 0; border: none; border-radius: 8px; font-size: 13px; cursor: pointer; }
+button.primary { background: #2563eb; color: #fff; }
+button.primary:hover { background: #1d4ed8; }
+button.danger { background: #fff; color: #b3261e; border: 1px solid #e5b3ae; }
+button.danger:hover { background: #fdf3f2; }
+.msg { min-height: 16px; font-size: 12px; margin-top: 6px; color: #1a7f37; }
+.msg.err { color: #b3261e; }
+.ok { font-size: 13px; color: #1a7f37; margin-bottom: 8px; }
+.hint { font-size: 11px; color: #6e7781; line-height: 1.7; background: #f0f2f4; border-radius: 8px; padding: 9px 11px; }

@@ -1,0 +1,33 @@
+[package]
+name = "localvault"
+version = "1.9.3"
+description = "Local-first password manager"
+authors = ["LocalVault Project"]
+edition = "2021"
+build = "build.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-updater = "2"
+tiny_http = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+argon2 = "0.5"
+chacha20poly1305 = { version = "0.10.1", features = ["std"] }
+aes-gcm = { version = "0.10", features = ["std"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+zeroize = "1"
+dirs = "6"
+hex = "0.4"
+encoding_rs = "0.8"
+windows = { version = "0.61", features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_GdiPlus", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Com", "ApplicationModel_DataTransfer"] }
+base64 = "0.22"
+tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-global-shortcut = "2"
