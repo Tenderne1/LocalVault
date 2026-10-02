@@ -65,8 +65,8 @@ jobs:
             Get-FileHash -Algorithm SHA256 |
             ForEach-Object { "$($_.Hash)  $($_.Path)" } |
             Set-Content $out
-          if (Test-Path "release/LocalVault-Portable-x64.zip") {
-            (Get-FileHash "release/LocalVault-Portable-x64.zip" -Algorithm SHA256).Hash + "  release/LocalVault-Portable-x64.zip" | Add-Content $out
+          if (Test-Path "release/LocalVault-Portable-x64-v1.9.3.zip") {
+            (Get-FileHash "release/LocalVault-Portable-x64-v1.9.3.zip" -Algorithm SHA256).Hash + "  release/LocalVault-Portable-x64-v1.9.3.zip" | Add-Content $out
           }
           if (Test-Path "release/LocalVault-Fill-v1.9.3.zip") {
             (Get-FileHash "release/LocalVault-Fill-v1.9.3.zip" -Algorithm SHA256).Hash + "  release/LocalVault-Fill-v1.9.3.zip" | Add-Content $out
@@ -76,7 +76,7 @@ jobs:
         shell: pwsh
         run: |
           gh release upload "${{ github.ref_name }}" `
-            "release/LocalVault-Portable-x64.zip" `
+            "release/LocalVault-Portable-x64-v1.9.3.zip" `
             "release/LocalVault-Fill-v1.9.3.zip" `
             "SHA256SUMS.txt" `
             --clobber

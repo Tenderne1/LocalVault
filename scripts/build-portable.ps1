@@ -58,7 +58,7 @@ if (Test-Path $installCmd) {
   Copy-Item $installCmd (Join-Path $portableRoot "安装浏览器扩展.cmd") -Force
 }
 
-$zip = Join-Path (Get-Location) "release\LocalVault-Portable-x64.zip"
+$zip = Join-Path (Get-Location) "release\LocalVault-Portable-x64-v1.9.3.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }
 Compress-Archive -Path (Join-Path $portableRoot "*") -DestinationPath $zip -CompressionLevel Optimal
 
