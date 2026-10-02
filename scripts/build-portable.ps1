@@ -47,9 +47,28 @@ LocalVault 便携版
 注意：便携版不内置 WebView2 Runtime。推荐使用 Launch-LocalVault.cmd；如果缺少 Microsoft Edge WebView2 Runtime，会弹出友好提示并打开微软官方下载页面。
 "@ | Set-Content -Path (Join-Path $portableRoot "README-便携版.txt") -Encoding UTF8
 
+# 浏览器填充扩展（保持 icons/ 目录结构，供「加载解压缩的扩展」直接选择）
+$extSrc = Join-Path (Get-Location) "extension"
+if (Test-Path $extSrc) {
+  Copy-Item $extSrc (Join-Path $portableRoot "extension") -Recurse -Force
+}
+# 扩展安装向导（放在便携版根目录，提示选择本目录 extension 文件夹）
+$installCmd = Join-Path (Get-Location) "scripts\安装浏览器扩展.cmd"
+if (Test-Path $installCmd) {
+  Copy-Item $installCmd (Join-Path $portableRoot "安装浏览器扩展.cmd") -Force
+}
+
 $zip = Join-Path (Get-Location) "release\LocalVault-Portable-x64.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }
 Compress-Archive -Path (Join-Path $portableRoot "*") -DestinationPath $zip -CompressionLevel Optimal
 
+# 打包浏览器填充插件（解压后含 manifest.json 与 icons/，可直接加载）
+$pluginZip = Join-Path (Get-Location) "release\LocalVault-Fill-v1.9.3.zip"
+if (Test-Path $pluginZip) { Remove-Item -Force $pluginZip }
+if (Test-Path $extSrc) {
+  Compress-Archive -Path (Join-Path $extSrc "*") -DestinationPath $pluginZip -CompressionLevel Optimal
+}
+
 Write-Host "Portable folder: $portableRoot" -ForegroundColor Green
 Write-Host "Portable ZIP:    $zip" -ForegroundColor Green
+Write-Host "Plugin ZIP:      $pluginZip" -ForegroundColor Green
