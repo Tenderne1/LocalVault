@@ -193,7 +193,15 @@ fn secure_copy_text(text:&str)->Result<(),String>{
 fn copy_secure(text:String)->Result<(),String>{secure_copy_text(&text)}
 #[tauri::command] fn vault_status(state:State<'_,Arc<Mutex<VaultManager>>>)->Result<BootstrapStatus,String>{state.lock().map_err(|_|"state lock poisoned".to_string())?.status()}
 #[tauri::command] fn vault_list(state:State<'_,Arc<Mutex<VaultManager>>>)->Result<Vec<Entry>,String>{state.lock().map_err(|_|"state lock poisoned".to_string())?.list()}
-#[tauri::command] fn vault_create(master_password:String,confirm_password:String,state:State<'_,Arc<Mutex<VaultManager>>>)->Result<(),String>{state.lock().map_err(|_|"state lock poisoned".to_string())?.create(&master_password,&confirm_password)}
+#[tauri::command] fn vault_create(master_password:String,confirm_password:String,state:State<'_,Arc<Mutex<VaultManager>>>,bridge:State<'_,Mutex<AutofillBridge>>,sync_bridge:State<'_,Mutex<SyncBridge>>)->Result<(),String>{
+    let r=state.lock().map_err(|_|"state lock poisoned".to_string())?.create(&master_password,&confirm_password);
+    if r.is_ok(){
+        // 创建后 Vault 即处于解锁状态：与解锁一致地启动浏览器填充（若已启用）与局域网同步服务
+        if let Ok(mut b)=bridge.lock(){b.on_vault_unlocked(&*state);}
+        if let Ok(mut b)=sync_bridge.lock(){b.on_vault_unlocked(&*state);}
+    }
+    r
+}
 #[tauri::command] fn vault_unlock(master_password:String,captcha:Option<String>,state:State<'_,Arc<Mutex<VaultManager>>>,bridge:State<'_,Mutex<AutofillBridge>>,sync_bridge:State<'_,Mutex<SyncBridge>>)->Result<Vec<Entry>,String>{
     let r=state.lock().map_err(|_|"state lock poisoned".to_string())?.unlock(&master_password,captcha.as_deref());
     if r.is_ok(){
