@@ -331,7 +331,7 @@ impl VaultManager{
    c.execute("INSERT OR REPLACE INTO meta(key,value)VALUES('unlock_lock_until',?)",params![b"0".to_vec()]).map_err(|e|e.to_string())?;
    self.captcha=None;Ok(())
  }
- pub fn create(&mut self,pass:&str,confirm:&str)->Result<(),String>{validate_new_master_password(pass)?;if pass!=confirm{return Err("两次输入的主密码不一致".into())}if self.path.exists(){return Err("Vault 已存在".into())}let c=self.db()?;let salt=Self::random::<16>();let dek=Self::random::<32>();let mut kek=Self::derive(pass,&salt)?;let wrapped=Self::enc(&kek,&dek,b"LocalVault|wrapped_dek|v1")?;kek.zeroize();c.execute("INSERT INTO meta(key,value)VALUES('format_version',?),('salt',?),('wrapped_dek',?)",params![FORMAT_VERSION.to_be_bytes().to_vec(),salt.to_vec(),wrapped]).map_err(|e|e.to_string())?;self.dek=Some(dek);let mut sk=[0u8;32];OsRng.fill_bytes(&mut sk);self.session_key=Some(sk);self.log_event("create_success");Ok(())}
+ pub fn create(&mut self,pass:&str,confirm:&str)->Result<(),String>{let t0=now_ms();validate_new_master_password(pass)?;if pass!=confirm{return Err("两次输入的主密码不一致".into())}if self.path.exists(){return Err("Vault 已存在".into())}let c=self.db()?;let salt=Self::random::<16>();let dek=Self::random::<32>();let mut kek=Self::derive(pass,&salt)?;self.log_event(&format!("create_argon_done|{}ms",now_ms()-t0));let wrapped=Self::enc(&kek,&dek,b"LocalVault|wrapped_dek|v1")?;kek.zeroize();c.execute("INSERT INTO meta(key,value)VALUES('format_version',?),('salt',?),('wrapped_dek',?)",params![FORMAT_VERSION.to_be_bytes().to_vec(),salt.to_vec(),wrapped]).map_err(|e|e.to_string())?;self.dek=Some(dek);let mut sk=[0u8;32];OsRng.fill_bytes(&mut sk);self.session_key=Some(sk);self.log_event("create_success");self.log_event(&format!("create_done|{}ms",now_ms()-t0));Ok(())}
  pub fn unlock(&mut self,pass:&str,captcha:Option<&str>)->Result<Vec<Entry>,String>{
    self.before_unlock(captcha)?;
    self.unprotect_storage()?;
@@ -372,9 +372,11 @@ impl VaultManager{
      return Err("Vault locked".into());
    };
    let dek=*dek;
+   let t0=now_ms();
    // 增量保存：直接在现有库上做事务更新，不再整库重建文件（避免 Windows 文件替换/杀软扫描造成的保存延迟）
    let c=self.db()?;
    let old_entries=self.read_entries(&c,&dek)?;
+   self.log_event(&format!("save_read_done|{}ms",now_ms()-t0));
    let old_map=old_entries.iter().map(|e|(e.id.clone(),e)).collect::<std::collections::HashMap<_,_>>();
    let tx=c.unchecked_transaction().map_err(|e|e.to_string())?;
    for e in entries{
@@ -398,6 +400,7 @@ impl VaultManager{
      }
    }
    tx.commit().map_err(|e|e.to_string())?;
+   self.log_event(&format!("save_tx_done|{}ms",now_ms()-t0));
    drop(c);
    self.auto_backup();
    let mut out=entries.to_vec();
@@ -408,6 +411,7 @@ impl VaultManager{
      }
    }
    self.sanitize_entries(&mut out)?;
+   self.log_event(&format!("save_done|{}ms",now_ms()-t0));
    Ok(out)}
  pub fn list_categories(&self)->Result<Vec<Category>,String>{let c=self.db()?;let mut st=c.prepare("SELECT name,icon,parent_name FROM categories ORDER BY CASE WHEN parent_name IS NULL THEN 0 ELSE 1 END, COALESCE(parent_name,'') ASC, sort_order ASC, created_at ASC").map_err(|e|e.to_string())?;let rows=st.query_map([],|r|Ok(Category{name:r.get(0)?,icon:r.get(1)?,parent_name:r.get(2)?})).map_err(|e|e.to_string())?;let mut out=Vec::new();for r in rows{out.push(r.map_err(|e|e.to_string())?)}Ok(out)}
  pub fn create_category(&self,name:&str,icon:&str,parent_name:Option<&str>)->Result<(),String>{let n=name.trim();if n.is_empty(){return Err("分类名称不能为空".into())}if n.chars().count()>40{return Err("分类名称过长".into())}let parent=parent_name.map(str::trim).filter(|x|!x.is_empty()).map(str::to_string);if parent.as_deref()==Some(n){return Err("分类不能以自己作为父分类".into())}let c=self.db()?;if c.query_row::<String,_,_>("SELECT name FROM categories WHERE name=?1",params![n],|r|r.get(0)).is_ok(){return Err("分类已经存在".into())}if let Some(ref pn)=parent{if c.query_row::<String,_,_>("SELECT name FROM categories WHERE name=?1",params![pn],|r|r.get(0)).is_err(){return Err("父分类不存在".into())}}let order:i64=c.query_row::<i64,_,_>("SELECT COALESCE(MAX(sort_order),-1)+1 FROM categories WHERE parent_name IS ?1",params![parent.as_deref()],|r|r.get::<_,i64>(0)).map_err(|e|e.to_string())?;let icon_value=if icon.trim().is_empty(){"📁".to_string()}else{icon.trim().to_string()};c.execute("INSERT INTO categories(name,icon,parent_name,created_at,sort_order)VALUES(?1,?2,?3,strftime('%s','now'),?4)",params![n,icon_value,parent.as_deref(),order]).map_err(|e|e.to_string())?;Ok(())}
