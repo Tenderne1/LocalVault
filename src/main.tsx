@@ -145,6 +145,8 @@ function App(){
  const lastActivityRef=useRef(now());
  const autoLockingRef=useRef(false);
  const savingRef=useRef(false);
+ const editModeRef=useRef(false);editModeRef.current=editMode;
+ const draftRef=useRef<Entry|null>(null);draftRef.current=draft;
  useEffect(()=>{entriesRef.current=entries},[entries]);
  useEffect(()=>{categoriesRef.current=categories},[categories]);
 
@@ -179,7 +181,8 @@ useEffect(()=>{if(view==="vault")lastActivityRef.current=now()},[view]);
    };
    const checkAutoLock=()=>{
      if(document.visibilityState==="hidden")return;
-     if(view!=="vault"||autoLockingRef.current||savingRef.current)return;
+     if(view!=="vault"||showOnboarding||autoLockingRef.current||savingRef.current)return;
+     if(editModeRef.current&&draftRef.current)return;
      if(now()-lastActivityRef.current>=autoLock*60000)void performAutoLock();
    };
    addEventListener("mousemove",markActivity,{passive:true});
@@ -200,7 +203,7 @@ useEffect(()=>{if(view==="vault")lastActivityRef.current=now()},[view]);
      document.removeEventListener("visibilitychange",checkAutoLock);
      clearInterval(id);
    };
- },[view,autoLock]);
+ },[view,autoLock,showOnboarding]);
  useEffect(()=>{localStorage.setItem("lv_auto_lock",String(autoLock))},[autoLock]);
  useEffect(()=>{localStorage.setItem("lv_sidebar_width",String(sidebarWidth))},[sidebarWidth]);
  useEffect(()=>{localStorage.setItem("lv_list_width",String(listWidth))},[listWidth]);
@@ -578,7 +581,7 @@ const checkUpdate=async()=>{if(updateChecking||updateInstalling)return;setUpdate
 </Modal>}
  
   {dialog==="prompt"&&promptMeta&&<Modal title={promptMeta.title}><input autoFocus value={promptValue} onChange={e=>setPromptValue(e.target.value)} placeholder={promptMeta.placeholder} onKeyDown={e=>e.key==="Enter"&&confirmPrompt()}/>{error&&<div className="error">{error}</div>}<div className="modalActions"><button className="cancelBtn" onClick={()=>{setPromptMeta(null);setPromptValue("");setDialog("none")}}>取消</button><button onClick={confirmPrompt}>确定</button></div></Modal>}
-  {dialog==="recoveryCode"&&<Modal title="新的 Recovery Code"><p className="muted">旧 Recovery Code 已失效。新码已尝试复制到剪贴板，请立即离线保存。</p><div className="codebox">{newRecoveryCode}</div><div className="modalActions"><button className="cancelBtn" onClick={()=>{setNewRecoveryCode("");setDialog("none")}}>我已保存</button><button onClick={()=>void copyRecoveryCode(newRecoveryCode)}>重新复制</button></div></Modal>}{showOnboarding&&<OnboardingModal onClose={()=>{setShowOnboarding(false);localStorage.setItem("lv_onboarding_seen","1")}}/>} </div>
+  {dialog==="recoveryCode"&&<Modal title="新的 Recovery Code"><p className="muted">旧 Recovery Code 已失效。新码已尝试复制到剪贴板，请立即离线保存。</p><div className="codebox">{newRecoveryCode}</div><div className="modalActions"><button className="cancelBtn" onClick={()=>{setNewRecoveryCode("");setDialog("none")}}>我已保存</button><button onClick={()=>void copyRecoveryCode(newRecoveryCode)}>重新复制</button></div></Modal>}{showOnboarding&&<OnboardingModal onClose={()=>{setShowOnboarding(false);lastActivityRef.current=now();localStorage.setItem("lv_onboarding_seen","1")}}/>} </div>
 }
 
 function OnboardingModal({onClose}:{onClose:()=>void}){

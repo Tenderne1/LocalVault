@@ -1,5 +1,8 @@
 # v1.9.4（局域网同步版）
 
+- 修复：创建 Vault 后首次「新建密码 → 保存」被误判为 Vault locked 并强制回到解锁页——create 流程漏初始化内存会话密钥（session_key），保存时生成会话密文报「Vault locked」；现与解锁流程一致在创建时生成会话密钥。
+- 修复：首次运行新手引导停留期间被自动锁定误伤——引导显示期间暂停自动锁定检查，关闭引导即刷新活动计时；编辑弹窗打开（有未保存修改）期间不触发自动锁定。
+- 新增：创建/保存/锁定等关键路径增加故障日志事件（create_success / save_ok / save_failed_vault_locked / recovery_enabled），便于定位问题。
 - 新增：安卓手机客户端（android-app/）——Tauri 2 Android 工程，独立 React UI，与桌面端同一套加密核心（Argon2id 128MB/3/2 + XChaCha20-Poly1305），首次 APK 已构建签名（arm64-v8a）。
 - 新增：桌面端局域网同步服务（仅解锁时运行）——监听 0.0.0.0:38528，接口 health / pair / pull / unpair；配对码 6 位一次性（5 分钟）+ 二维码（localvault://sync?ip=&port=&code=&key=），传输密钥来自二维码，请求/响应体 XChaCha20 全密文（AAD=接口路径）；锁定 Vault 即停服、销毁 token 与传输密钥。
 - 修复（Windows 端口残留根因）：同步服务与浏览器填充服务均改用 socket2 SO_REUSEADDR 创建监听器（Server::from_listener），根除「锁定后端口仍 LISTENING / 重新解锁后服务不可用」；start 失败写入 last_error 并输出日志；新增 start→stop→rebind→start→stop 回归测试（14 tests 通过）。
