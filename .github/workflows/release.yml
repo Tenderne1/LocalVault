@@ -64,7 +64,7 @@ jobs:
           if (Test-Path $out) { Remove-Item $out -Force }
           Get-ChildItem "src-tauri/target/release/bundle" -Recurse -File |
             Get-FileHash -Algorithm SHA256 |
-            ForEach-Object { "$($_.Hash)  $($_.Name)" } |
+            ForEach-Object { "$($_.Hash)  $(Split-Path $_.Path -Leaf)" } |
             Set-Content $out
           Get-ChildItem "release" -Filter "LocalVault-Portable-x64-v$ver.zip" | ForEach-Object {
             (Get-FileHash $_.FullName -Algorithm SHA256).Hash + "  " + $_.Name | Add-Content $out
