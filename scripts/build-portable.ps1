@@ -10,6 +10,9 @@ if (-not $exe) {
   throw "找不到已编译的 LocalVault.exe，请先运行 npm.cmd run tauri:build。"
 }
 
+# 版本号动态读取（便携包名带版本号，便于下载后区分）
+$ver = (Get-Content "src-tauri\tauri.conf.json" -Raw -Encoding UTF8 | ConvertFrom-Json).version
+
 $portableRoot = Join-Path (Get-Location) "release\LocalVault-Portable-x64"
 if (Test-Path $portableRoot) { Remove-Item -Recurse -Force $portableRoot }
 New-Item -ItemType Directory -Force -Path $portableRoot | Out-Null
@@ -58,12 +61,21 @@ if (Test-Path $installCmd) {
   Copy-Item $installCmd (Join-Path $portableRoot "安装浏览器扩展.cmd") -Force
 }
 
-$zip = Join-Path (Get-Location) "release\LocalVault-Portable-x64-v1.9.4.zip"
+$zip = Join-Path (Get-Location) ("release\LocalVault-Portable-x64-v" + $ver + ".zip")
 if (Test-Path $zip) { Remove-Item -Force $zip }
 Compress-Archive -Path (Join-Path $portableRoot "*") -DestinationPath $zip -CompressionLevel Optimal
 
 # 打包浏览器填充插件（解压后含 manifest.json 与 icons/，可直接加载）
-$pluginZip = Join-Path (Get-Location) "release\LocalVault-Fill-v1.9.3.zip"
+# 插件包名跟随插件自身版本（manifest.json 的 version），与主程序版本解耦——插件未更新时保持旧版本号
+$fillVer = "1.9.3"
+$extManifest = Join-Path $extSrc "manifest.json"
+if (Test-Path $extManifest) {
+  $mv = (Get-Content $extManifest -Raw -Encoding UTF8 | ConvertFrom-Json).version
+  if ($mv) { $fillVer = [string]$mv } else { Write-Warning "extension\manifest.json 缺少 version 字段，插件包沿用 $fillVer" }
+} else {
+  Write-Warning "未找到 extension\manifest.json，插件包沿用 $fillVer"
+}
+$pluginZip = Join-Path (Get-Location) ("release\LocalVault-Fill-v" + $fillVer + ".zip")
 if (Test-Path $pluginZip) { Remove-Item -Force $pluginZip }
 if (Test-Path $extSrc) {
   Compress-Archive -Path (Join-Path $extSrc "*") -DestinationPath $pluginZip -CompressionLevel Optimal
