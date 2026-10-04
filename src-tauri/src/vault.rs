@@ -372,11 +372,12 @@ impl VaultManager{
      return Err("Vault locked".into());
    };
    let dek=*dek;
-   let old_path=self.path.clone();let tmp=old_path.with_extension("new");if tmp.exists(){let _=fs::remove_file(&tmp);}let c=Connection::open(&tmp).map_err(|e|e.to_string())?;self.init_schema(&c)?;let old=Connection::open(&old_path).map_err(|e|e.to_string())?;self.init_schema(&old)?;let salt=self.salt(&old)?;let w=self.meta(&old,"wrapped_dek")?;let recovery=self.meta(&old,"recovery_wrapped").ok();let questions=self.meta(&old,"recovery_questions").ok();c.execute("INSERT INTO meta VALUES('format_version',?),('salt',?),('wrapped_dek',?)",params![FORMAT_VERSION.to_be_bytes().to_vec(),salt.to_vec(),w]).map_err(|e|e.to_string())?;if let Some(x)=recovery{c.execute("INSERT INTO meta VALUES('recovery_wrapped',?)",params![x]).map_err(|e|e.to_string())?;}if let Some(x)=questions{c.execute("INSERT INTO meta VALUES('recovery_questions',?)",params![x]).map_err(|e|e.to_string())?;}
-   {let mut st=old.prepare("SELECT name,icon,parent_name,created_at,sort_order FROM categories ORDER BY sort_order").map_err(|e|e.to_string())?;let rows=st.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?))).map_err(|e|e.to_string())?;for r in rows{let(n,i,pn,ca,so)=r.map_err(|e|e.to_string())?;c.execute("INSERT OR REPLACE INTO categories(name,icon,parent_name,created_at,sort_order)VALUES(?,?,?,?,?)",params![n,i,pn,ca,so]).map_err(|e|e.to_string())?;} }
-   {let mut st=old.prepare("SELECT entry_id,changed_at,cipher FROM history").map_err(|e|e.to_string())?;let rows=st.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,Vec<u8>>(2)?))).map_err(|e|e.to_string())?;for r in rows{let(e,t,ct)=r.map_err(|e|e.to_string())?;c.execute("INSERT INTO history(entry_id,changed_at,cipher)VALUES(?,?,?)",params![e,t,ct]).map_err(|e|e.to_string())?;} }
-   {let mut st=old.prepare("SELECT id,cipher,deleted_at,original_seq FROM trash").map_err(|e|e.to_string())?;let rows=st.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Vec<u8>>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?))).map_err(|e|e.to_string())?;for r in rows{let(id,ct,t,seq)=r.map_err(|e|e.to_string())?;c.execute("INSERT INTO trash(id,cipher,deleted_at,original_seq)VALUES(?,?,?,?)",params![id,ct,t,seq]).map_err(|e|e.to_string())?;} }
-   let old_entries=self.read_entries(&old,&dek)?;let old_map=old_entries.iter().map(|e|(e.id.clone(),e)).collect::<std::collections::HashMap<_,_>>();let tx=c.unchecked_transaction().map_err(|e|e.to_string())?;for e in entries{
+   // 增量保存：直接在现有库上做事务更新，不再整库重建文件（避免 Windows 文件替换/杀软扫描造成的保存延迟）
+   let c=self.db()?;
+   let old_entries=self.read_entries(&c,&dek)?;
+   let old_map=old_entries.iter().map(|e|(e.id.clone(),e)).collect::<std::collections::HashMap<_,_>>();
+   let tx=c.unchecked_transaction().map_err(|e|e.to_string())?;
+   for e in entries{
      let mut s=e.clone();
      // 前端无明文：password 为空时，优先用会话密文恢复，其次回退旧库
      if s.password.is_empty(){
@@ -386,7 +387,19 @@ impl VaultManager{
      if let Some(prev)=old_map.get(&s.id){let fields=Self::changed_fields(prev,&s);if !fields.is_empty(){let p=serde_json::to_vec(&fields).map_err(|e|e.to_string())?;let aad=format!("LocalVault|history|{}|v1",s.id);let ct=Self::enc(&dek,&p,aad.as_bytes())?;tx.execute("INSERT INTO history(entry_id,changed_at,cipher)VALUES(?,?,?)",params![s.id,now_ms(),ct]).map_err(|e|e.to_string())?;tx.execute("DELETE FROM history WHERE entry_id=?1 AND id NOT IN (SELECT id FROM history WHERE entry_id=?1 ORDER BY changed_at DESC,id DESC LIMIT 3)",params![s.id]).map_err(|e|e.to_string())?;}}
      let mut store=s.clone();
      store.password_encrypted=None;store.password_score=None;store.password_reused=None;
-     let p=serde_json::to_vec(&store).map_err(|e|e.to_string())?;let aad=format!("LocalVault|entry|{}|v1",s.id);let ct=Self::enc(&dek,&p,aad.as_bytes())?;tx.execute("INSERT INTO entries(id,cipher,updated_at)VALUES(?,?,?)",params![s.id,ct,s.updated_at]).map_err(|e|e.to_string())?;}tx.commit().map_err(|e|e.to_string())?;drop(old);drop(c);let bak=old_path.with_extension("bak");let mut old_preserved=false;if old_path.exists(){if fs::rename(&old_path,&bak).is_ok(){old_preserved=true;}else{fs::copy(&old_path,&bak).map_err(|e|{let _=fs::remove_file(&tmp);format!("保存失败：无法创建原 Vault 备份：{}",e)})?;if old_path.exists(){fs::remove_file(&old_path).map_err(|e|{let _=fs::remove_file(&tmp);format!("保存失败：无法替换原 Vault：{}",e)})?;}old_preserved=true;}}if let Err(e)=fs::rename(&tmp,&old_path){if old_preserved&&bak.exists(){let _=fs::rename(&bak,&old_path);}return Err(e.to_string())}let _=fs::remove_file(&bak);self.auto_backup();
+     let p=serde_json::to_vec(&store).map_err(|e|e.to_string())?;let aad=format!("LocalVault|entry|{}|v1",s.id);let ct=Self::enc(&dek,&p,aad.as_bytes())?;
+     tx.execute("INSERT OR REPLACE INTO entries(id,cipher,updated_at)VALUES(?,?,?)",params![s.id,ct,s.updated_at]).map_err(|e|e.to_string())?;
+   }
+   // 新列表为准：旧库中存在但本次列表缺失的条目删除（与整库重建语义一致）
+   let new_ids=entries.iter().map(|e|e.id.clone()).collect::<std::collections::HashSet<_>>();
+   for(id,_) in &old_map{
+     if !new_ids.contains(id){
+       tx.execute("DELETE FROM entries WHERE id=?1",params![id]).map_err(|e|e.to_string())?;
+     }
+   }
+   tx.commit().map_err(|e|e.to_string())?;
+   drop(c);
+   self.auto_backup();
    let mut out=entries.to_vec();
    for e in out.iter_mut(){
      if e.password.is_empty(){
