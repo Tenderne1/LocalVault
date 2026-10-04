@@ -144,6 +144,7 @@ function App(){
  const entriesRef=useRef<Entry[]>([]),categoriesRef=useRef<Category[]>([]),dragChangedRef=useRef(false);
  const lastActivityRef=useRef(now());
  const autoLockingRef=useRef(false);
+ const savingRef=useRef(false);
  useEffect(()=>{entriesRef.current=entries},[entries]);
  useEffect(()=>{categoriesRef.current=categories},[categories]);
 
@@ -158,7 +159,7 @@ useEffect(()=>{if(view==="vault")lastActivityRef.current=now()},[view]);
  useEffect(()=>{
    const markActivity=()=>{lastActivityRef.current=now()};
    const performAutoLock=async()=>{
-     if(autoLockingRef.current)return;
+     if(autoLockingRef.current||savingRef.current)return;
      autoLockingRef.current=true;
      // 必须先让后端真正锁定（vault_lock 内部会先停填充服务、销毁 token），
      // 再切换前端界面，避免"界面已锁但服务/端口仍存活"的状态分裂。
@@ -166,7 +167,8 @@ useEffect(()=>{if(view==="vault")lastActivityRef.current=now()},[view]);
      try{await invoke("vault_lock");ok=true}
      catch(e){setError("自动锁定失败，稍后自动重试："+String(e))}
      if(ok){
-       setEntries([]);setSelected(null);setDraft(null);setEditMode(false);setDirty(false);setView("unlock");setMaster("");clearRevealed();
+       // 锁定只清空内存中的敏感列表与选中态；保留未保存的编辑草稿(draft/dirty)，解锁后可直接继续编辑，避免“填到一半被自动锁定导致内容丢失”。
+       setEntries([]);setSelected(null);clearRevealed();setView("unlock");setMaster("");
        void loadAutofillStatus();void loadSyncStatus();setSyncPair(null);
        lastActivityRef.current=now();
      }else{
@@ -177,7 +179,7 @@ useEffect(()=>{if(view==="vault")lastActivityRef.current=now()},[view]);
    };
    const checkAutoLock=()=>{
      if(document.visibilityState==="hidden")return;
-     if(view!=="vault"||autoLockingRef.current)return;
+     if(view!=="vault"||autoLockingRef.current||savingRef.current)return;
      if(now()-lastActivityRef.current>=autoLock*60000)void performAutoLock();
    };
    addEventListener("mousemove",markActivity,{passive:true});
@@ -408,7 +410,7 @@ useEffect(()=>{localStorage.setItem("lv_shortcuts",JSON.stringify(shortcuts))},[
  const genSyncPair=async()=>{setError("");try{const info=await invoke<SyncPairInfo>("sync_begin_pair");setSyncPair(info);setTimeout(()=>{if(syncQrRef.current){// 二维码改 http 引导页：微信/浏览器可打开，引导页内再提供 localvault:// 手动配对地址
  void QRCode.toCanvas(syncQrRef.current,`http://${info.ip}:${info.port}/mobile-qr?c=${info.code}&k=${encodeURIComponent(info.key)}`,{width:220,margin:1})}},50)}catch(e){setError(String(e))}};
  const syncUnpairAll=async()=>{setError("");try{await invoke("sync_unpair_all");setSyncPair(null);await loadSyncStatus()}catch(e){setError(String(e))}};
- const saveEntries=async(xs:Entry[]):Promise<Entry[]|null>=>{setSaveState("保存中…");try{const saved=await invoke<Entry[]>("vault_save",{entries:xs});setEntries(saved);const bs=await loadBackupSettings();setSaveState(bs.enabled&&bs.lastError?"已保存（自动备份失败）":"已保存");setDirty(false);return saved}catch(e){setSaveState("保存失败");const msg=String(e);if(/vault locked/i.test(msg)){clearRevealed();setEntries([]);setSelected(null);setDraft(null);setEditMode(false);setDirty(false);setView("unlock");setMaster("");void loadAutofillStatus();}setError(msg);return null}};
+ const saveEntries=async(xs:Entry[]):Promise<Entry[]|null>=>{lastActivityRef.current=now();savingRef.current=true;autoLockingRef.current=true;setSaveState("保存中…");try{const saved=await invoke<Entry[]>("vault_save",{entries:xs});setEntries(saved);const bs=await loadBackupSettings();setSaveState(bs.enabled&&bs.lastError?"已保存（自动备份失败）":"已保存");setDirty(false);return saved}catch(e){setSaveState("保存失败");const msg=String(e);if(/vault locked/i.test(msg)){clearRevealed();setEntries([]);setSelected(null);setView("unlock");setMaster("");void loadAutofillStatus();}setError(msg);return null}finally{savingRef.current=false;autoLockingRef.current=false;lastActivityRef.current=now()}};
  const clearRevealed=()=>{if(revealTimerRef.current){clearTimeout(revealTimerRef.current);revealTimerRef.current=null}setRevealed(null)};
  const revealPassword=async(e:Entry)=>{clearRevealed();if(!e.passwordEncrypted){setError("该条目未设置密码");return}try{const text=await invoke<string>("vault_entry_password",{entryId:e.id,passwordEncrypted:e.passwordEncrypted});setRevealed({id:e.id,text});revealTimerRef.current=window.setTimeout(()=>{setRevealed(null);revealTimerRef.current=null},20000)}catch(err){setError(String(err))}};
  const renumber=(xs:Entry[])=>xs.map((e,i)=>({...e,seq:i+1}));
