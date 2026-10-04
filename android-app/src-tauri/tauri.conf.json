@@ -35,7 +35,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ5Rjc1RjM2ODdBMzRCNDcKUldSSFM2T0hObC8zMllBdE9rU2RiYWdEbzlyZ2FJL0pEcW1HeTVvRTJ4L0drZHVXbVAyQ2pFU0EK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEyMkIyNzE1REVCNjI3QjcKUldTM0o3YmVGU2NyRXE3bDVocGc1Rm42dE1PZFJkTjNqWUxaZDFmZU40TExnc2hRd083aDBUdFgK",
       "endpoints": [
         "https://github.com/Tenderne1/LocalVault/releases/latest/download/latest.json"
       ]
