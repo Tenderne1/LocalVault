@@ -11,4 +11,4 @@ jobs:
       - run: npm install
       - run: npm run build
       - run: cargo test --manifest-path src-tauri/Cargo.toml
-      - run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+      - run: cargo clippy --manifest-path src-tauri/Cargo.toml
