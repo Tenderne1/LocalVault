@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "LocalVault 手机端主能力",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

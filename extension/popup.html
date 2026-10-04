@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<title>LocalVault-Fill</title>
+<link rel="stylesheet" href="popup.css"/>
+</head>
+<body>
+  <div class="head">
+    <span class="logo">🔐</span>
+    <div><b>LocalVault-Fill</b><small>浏览器填充扩展</small></div>
+    <span id="statusDot" class="dot off"></span>
+  </div>
+
+  <div class="card" id="pairCard">
+    <p class="desc">输入 LocalVault 生成的 6 位配对码，建立与本机填充服务的加密连接。</p>
+    <input id="pairCode" type="text" inputmode="numeric" maxlength="6" placeholder="6 位配对码" autocomplete="off"/>
+    <button id="pairBtn" class="primary">配对连接</button>
+    <div id="msg" class="msg"></div>
+  </div>
+
+  <div class="card" id="pairedCard" style="display:none">
+    <p class="ok">✓ 已与本机填充服务配对</p>
+    <button id="unpairBtn" class="danger">断开配对</button>
+  </div>
+
+  <div class="hint">使用步骤：<br/>1. 解锁 LocalVault，打开「🌐 浏览器填充」开关<br/>2. 生成 6 位配对码并在此输入<br/>3. 访问登录页，点击密码框旁 🔑 选择账号填充</div>
+  <script src="popup.js"></script>
+</body>
+</html>
