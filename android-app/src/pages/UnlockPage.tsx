@@ -123,6 +123,11 @@ export default function UnlockPage({ status, busy, setBusy, error, setError, onD
           <button className="btn-primary" type="submit" disabled={busy}>
             {busy ? "解锁中…" : "解锁"}
           </button>
+          {busy && (
+            <p className="muted" style={{ marginTop: 8, textAlign: "center" }}>
+              正在安全解锁（高强度加密校验，约需数秒）…
+            </p>
+          )}
 
           {status.bioUsable && (
             <button className="btn-secondary" type="button" onClick={() => void bioUnlock()} disabled={busy}>

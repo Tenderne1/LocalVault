@@ -721,13 +721,31 @@ fn is_valid_token(state:&Mutex<SyncState>,token:&str)->bool{
 
 // ---------- 局域网 IP 枚举 ----------
 
+fn wide_to_string(p:windows::core::PWSTR)->String{
+    if p.is_null(){return String::new();}
+    unsafe{p.to_string().unwrap_or_default()}
+}
+
+/// 网段优先级：10.* > 172.16-31.* > 192.168.* > 100.64.*(CGNAT) > 其它
+fn ip_rank(ip:&str)->u8{
+    if ip.starts_with("10."){return 0}
+    if let Some(rest)=ip.strip_prefix("172."){
+        if let Some(seg)=rest.split('.').next(){if let Ok(n)=seg.parse::<u8>(){if (16..=31).contains(&n){return 1}}}
+    }
+    if ip.starts_with("192.168."){return 2}
+    if ip.starts_with("100.64.")||ip.starts_with("100.65."){return 3}
+    4
+}
+
 #[cfg(target_os="windows")]
 fn lan_ips()->Vec<String>{
     use windows::Win32::Foundation::{ERROR_BUFFER_OVERFLOW,NO_ERROR};
-    use windows::Win32::NetworkManagement::IpHelper::{GetAdaptersAddresses,GAA_FLAG_SKIP_ANYCAST,GAA_FLAG_SKIP_DNS_SERVER,GAA_FLAG_SKIP_MULTICAST,IP_ADAPTER_ADDRESSES_LH,IP_ADAPTER_UNICAST_ADDRESS_LH};
+    use windows::Win32::NetworkManagement::IpHelper::{GetAdaptersAddresses,GAA_FLAG_SKIP_ANYCAST,GAA_FLAG_SKIP_DNS_SERVER,GAA_FLAG_SKIP_MULTICAST,IP_ADAPTER_ADDRESSES_LH,IP_ADAPTER_UNICAST_ADDRESS_LH,IF_TYPE_SOFTWARE_LOOPBACK};
     use windows::Win32::Networking::WinSock::{AF_INET,AF_UNSPEC,SOCKADDR_IN};
     let flags=GAA_FLAG_SKIP_ANYCAST|GAA_FLAG_SKIP_MULTICAST|GAA_FLAG_SKIP_DNS_SERVER;
     let family=AF_UNSPEC.0 as u32;
+    // 虚拟网卡/隧道/专用虚拟化接口关键词（大小写不敏感）
+    let virtual_markers=["virtualbox","vmware","host-only","hostonly","vbox","veth","hyper-v","wsl","tailscale","zerotier","wireguard","tap-","tun","hamachi","loopback","vmnet","docker","bluetooth","虚拟"];
     let mut out=Vec::new();
     unsafe{
         let mut size:u32=0;
@@ -738,6 +756,11 @@ fn lan_ips()->Vec<String>{
         if GetAdaptersAddresses(family,flags,None,Some(p),&mut size)!=NO_ERROR.0{return out;}
         let mut cur:*mut IP_ADAPTER_ADDRESSES_LH=p;
         while !cur.is_null(){
+            // 过滤回环接口与未启用（未连接）的接口（OperStatus 1 = IfOperStatusUp）
+            if (*cur).IfType==IF_TYPE_SOFTWARE_LOOPBACK || (*cur).OperStatus.0!=1{cur=(*cur).Next;continue;}
+            // 过滤虚拟网卡/隧道（VirtualBox Host-Only、VMware、Hyper-V、WSL、VPN 等）
+            let haystack=wide_to_string((*cur).FriendlyName).to_ascii_lowercase()+&wide_to_string((*cur).Description).to_ascii_lowercase();
+            if virtual_markers.iter().any(|k|haystack.contains(k)){cur=(*cur).Next;continue;}
             let mut ua:*mut IP_ADAPTER_UNICAST_ADDRESS_LH=(*cur).FirstUnicastAddress;
             while !ua.is_null(){
                 let sa=&*(*ua).Address.lpSockaddr;
@@ -752,7 +775,7 @@ fn lan_ips()->Vec<String>{
             cur=(*cur).Next;
         }
     }
-    out.sort();
+    out.sort_by(|a,b|ip_rank(a).cmp(&ip_rank(b)).then_with(||a.cmp(b)));
     out.dedup();
     out
 }

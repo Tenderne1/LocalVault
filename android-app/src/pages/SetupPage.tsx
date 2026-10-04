@@ -19,6 +19,18 @@ export default function SetupPage({ busy, setBusy, error, setError, onDone }: Pr
   const [answers, setAnswers] = useState(["", "", ""]);
   const [recoveryCode, setRecoveryCode] = useState<string | null>(null);
   const [skipSecurity, setSkipSecurity] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const copyCode = async () => {
+    if (!recoveryCode) return;
+    try {
+      await navigator.clipboard.writeText(recoveryCode);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setError("自动复制失败，请长按 Recovery Code 手动复制");
+    }
+  };
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -66,6 +78,9 @@ export default function SetupPage({ busy, setBusy, error, setError, onDone }: Pr
         <form className="card" onSubmit={(e) => { e.preventDefault(); confirmSaved(); }}>
           <p className="muted">这是找回主密码的唯一凭据（配合 3 组密保答案）。请截图保存或抄写下来，遗失后无法找回密码。</p>
           <p className="recovery-code">{recoveryCode}</p>
+          <button type="button" className="btn-secondary" onClick={() => void copyCode()} disabled={copied}>
+            {copied ? "✅ 已复制到剪贴板" : "📋 复制 Recovery Code"}
+          </button>
           {error && <div className="error-box">{error}</div>}
           <button className="btn-primary" type="submit">
             我已保存 Recovery Code，进入 App
