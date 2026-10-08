@@ -1,0 +1,197 @@
+﻿=====================================================================
+ LocalVault 项目交接文档（完整版）
+ 版本：v1.9.4 ｜ 发布日期：2026-10-04 ｜ 适用：后续任何账号继续维护
+=====================================================================
+
+【0. 文档目的】
+本文件供后续接手者（人或 AI 助手）快速理解 LocalVault 项目全貌，
+做到"拿到即可继续开发/调试/发布"，无需重新摸索。
+
+═════════════════════════════════════════════════════════════════
+一、项目是什么
+═════════════════════════════════════════════════════════════════
+- 自研【本地密码管理器】LocalVault，不依赖云端存储。
+- 形态：Windows 桌面端（Tauri 2 + React + Rust）+ 安卓 App（Tauri 2 Android）。
+- 数据：本地 SQLite 加密库，主密钥由 Argon2id 派生。
+- 同步：手机与电脑通过局域网服务 + 二维码（扫码同步）完成。
+- GitHub 仓库：https://github.com/Tenderne1/LocalVault
+  （公开仓库，git remote 已配置，可直接 push）
+
+═════════════════════════════════════════════════════════════════
+二、目录结构（关键路径）
+═════════════════════════════════════════════════════════════════
+1. 本地工作树（改代码在这里）：
+   H:\passwordmanagers\LocalVault-v1.9.4\
+   ├─ src\                      前端 React（TypeScript）
+   │   ├─ main.tsx              桌面端主入口（含自动锁定逻辑）
+   │   ├─ api.ts / back.ts      与后端交互
+   │   └─ pages\                各页面组件（Setup/Unlock/Vault/Sync/Settings）
+   ├─ src-tauri\                Rust 后端
+   │   ├─ src\vault.rs          核心：加密/建库/保存/解锁/session_key
+   │   ├─ src\main.rs           Tauri 命令注册、同步服务启动（vault_create 等）
+   │   └─ tauri.conf.json       配置（含更新器公钥 plugins.updater.pubkey）
+   ├─ android-app\              独立安卓工程（Tauri 2 Android）
+   │   ├─ src\                  安卓前端（React，页面同桌面端）
+   │   └─ src-tauri\gen\android\  Gradle 工程（已提交仓库，CI 可直接构建）
+   ├─ release\                  发布产物目录（与 GitHub Release 完全一致）
+   ├─ scripts\                  构建脚本（build-portable.ps1 便携版打包）
+   └─ .github\workflows\release.yml   Actions 发布流程（Windows）
+
+2. Git 发布树（git 操作只在这里做）：
+   G:\github\LocalVault-v1.9.4\
+   - 与 H 盘内容保持同步（H 盘改完代码 → 复制到 G 盘 → git commit/push）
+   - remote = https://github.com/Tenderne1/LocalVault.git（分支 main）
+
+3. 文档：
+   G:\github\更新版本后，把新版本推送到github.txt
+      —— 发布全流程操作手册（9 步，可直接复制执行）
+   G:\github\更新版本后，把新版本推送到github（原版v1.7.x备份）.txt
+      —— 早期记录备份（仅存档）
+
+═════════════════════════════════════════════════════════════════
+三、技术栈与核心架构
+═════════════════════════════════════════════════════════════════
+- 桌面/安卓：Tauri 2（WebView 前端 + Rust 后端）
+- 前端：React + TypeScript + Vite
+- 加密：Argon2id（ARGON_MEM_KIB=131072=128MB、ITERS=3、LANES=2）
+- 存储：SQLite 加密库（cipher），保存用事务原地增量更新
+- 会话机制：session_key（OsRng.fill_bytes 生成）
+  ★ 关键：create()/unlock()/restore() 三处【都必须】生成 session_key，
+   否则后续保存流程 session_encrypt() 会报 "Vault locked"（历史 bug，见第六节）
+- 自动锁定：前端计时器（无操作 N 秒后锁定；不因鼠标/键盘活动重置）
+
+═════════════════════════════════════════════════════════════════
+四、构建命令
+═════════════════════════════════════════════════════════════════
+1. 桌面 Windows 构建：
+   cd H:\passwordmanagers\LocalVault-v1.9.4
+   npm.cmd install
+   npm.cmd run tauri build
+   （产物在 src-tauri\target\release\bundle\：nsis exe + msi）
+
+2. 便携版（绿色版）打包：
+   powershell -File H:\passwordmanagers\LocalVault-v1.9.4\scripts\build-portable.ps1
+   （产物：release\LocalVault-Portable-x64-v1.9.4.zip）
+
+3. 安卓 APK 构建：
+   cd H:\passwordmanagers\LocalVault-v1.9.4\android-app
+   npm.cmd install
+   npm.cmd run tauri android build -- --target aarch64 --apk
+   签名 keystore：C:\AndroidDev\localvault-mobile.keystore
+   （密码 localvault123 / alias localvault / PKCS12）
+   签名后复制到 release\LocalVault-v1.9.4-arm64.apk
+
+4. 发布全流程：严格按 G:\github\更新版本后，把新版本推送到github.txt 执行
+   （含删 Release/Tag、打 Tag 触发 Actions、补传 APK、下载同步本地、SHA256 校验）
+
+═════════════════════════════════════════════════════════════════
+五、GitHub 当前状态（2026-10-04 快照）
+═════════════════════════════════════════════════════════════════
+- main 分支 = 56684a8（本地 H = G = GitHub，三处一致）
+- tag v1.9.4 → f4d0d99（Actions 实际构建版本）
+- Release v1.9.4（id=403065555）共 9 个资产：
+  ① LocalVault_1.9.4_x64-setup.exe（6258525B，含 .sig 官方签名）
+  ② LocalVault_1.9.4_x64_en-US.msi（8192000B，含 .sig）
+  ③ LocalVault-Portable-x64-v1.9.4.zip（6306578B）
+  ④ LocalVault-Fill-v1.9.3.zip（16077B，浏览器插件，沿用 1.9.3）
+  ⑤ LocalVault-v1.9.4-arm64.apk（8387726B，手动补传）
+  ⑥ latest.json（更新器清单）
+  ⑦ SHA256SUMS.txt（5 行校验，已修复格式）
+- Actions 工作流：release.yml（push tags v* 触发，windows-latest，
+  tauri-action 构建 + TAURI_SIGNING_PRIVATE_KEY 签名 Windows 安装包；
+  ★ 不构建 APK，APK 始终手动补传）
+
+═════════════════════════════════════════════════════════════════
+六、v1.9.4 重要修复历史（接手必读，避免重蹈覆辙）
+═════════════════════════════════════════════════════════════════
+1. 【保存后强制锁定 bug】用户复现：首次建库→新建密码→保存→弹回解锁页报 Vault locked。
+   根因：vault.rs create() 漏生成 session_key；保存流程 sanitize_entries()→
+   session_encrypt() 在写库成功后脱敏阶段报错，前端捕获 /vault locked/i 弹回。
+   修复：create() 补上与 unlock() 一致的 OsRng.fill_bytes 生成 session_key。
+   （仅创建后第一次保存复现，unlock/restore 本就生成，唯独 create 漏）
+
+2. 【手机同步无二维码按钮】创建完 rev code 点手机同步无二维码，锁定再解锁才有。
+   根因：前端仅 sync.running 时渲染按钮；后端 vault_create 建库后未启动同步服务
+   （只有 vault_unlock 调 sync_bridge.on_vault_unlocked）。
+   修复：vault_create 也调 on_vault_unlocked（填充 + 同步服务对称启动）。
+
+3. 【性能优化（用户拍板保持现状）】
+   - 创建主密码卡顿：加 isCreating loading 提示 + 恢复码生成与 loadCategories 并行。
+   - 保存约 1 秒延迟：从"整库重建文件+改名替换"重构为"SQLite 事务原地增量更新"
+     （INSERT OR REPLACE entries / 删除缺失 / history 照旧）。
+   - 对比 1.9.3 后结论：Argon2 参数两版完全一致（128MB/3/2），延迟来自
+     SQLite synchronous=FULL 的事务提交 fsync 落盘 + H 盘（外置/机械盘）偶发写入，
+     实测第 1/2/4 次提交 473/399/466ms，后续稳定 4-6ms；Argon2 派生仅 318ms。
+   - 用户拍板："行，就这样吧，不改了"（保持 FULL，安全优先）。★ 不要擅自再改。
+
+4. 【SHA256SUMS 生成 bug】release.yml 用 $_.Name（Get-FileHash 对象没有 Name 属性）
+   导致前几行只有哈希缺文件名。修复：ForEach-Object { "$($_.Hash)  $(Split-Path $_.Path -Leaf)" }，
+   commit 56684a8 已推送。若未来 Release 的 SHA256SUMS.txt 又出现缺文件名，
+   用发布手册【7】节命令重新生成并上传覆盖。
+
+5. 【故障日志默认关闭】发布版不预置 diagnostics-settings.json 时日志关闭；
+   诊断文件写在便携版 data\LocalVault.log；计时日志事件名：
+   create_argon_done/create_done/save_read_done/save_tx_done/save_done（带 now_ms + 版本）。
+
+═════════════════════════════════════════════════════════════════
+七、密钥、凭据与敏感信息（保密，不可丢失）
+═════════════════════════════════════════════════════════════════
+1. 更新器签名公钥（152 字符，tauri.conf.json plugins.updater.pubkey）
+   ★★★★★ 不可更换！老用户自动更新依赖此公钥验证签名 ★★★★★
+2. TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+   → 存在 GitHub Secrets（Windows 安装包签名），本地无明文副本。
+3. 安卓签名 keystore：C:\AndroidDev\localvault-mobile.keystore
+   （密码 localvault123 / alias localvault / PKCS12）——务必备份！
+4. GitHub Token 临时文件：C:\Users\Administrator\AppData\Local\Temp\lv-token.txt
+   （已多次复用；过期需重新生成 GitHub Personal Access Token 覆盖该文件）
+
+═════════════════════════════════════════════════════════════════
+八、老用户兼容性硬约束（发布时绝不破坏）
+═════════════════════════════════════════════════════════════════
+1. 更新器公钥不可换（否则所有老用户无法自动更新）。
+2. 数据库加密参数不可变（Argon2 参数、SQLite 结构、密钥派生方式）。
+3. 同版本重发不触发自动更新（更新器按版本号判断）——
+   重发同版本时，已装旧版的用户需手动下载，属正常现象，需在发布说明中提示。
+4. 发布资产 SHA256 必须与 GitHub 一致（本地 release 从 GitHub 下载回填）。
+
+═════════════════════════════════════════════════════════════════
+九、已知坑点与经验（省时间）
+═════════════════════════════════════════════════════════════════
+1. PowerShell 5.1 把 git 的 stderr 当错误 → 推送成功也会报红色 exit=1（误报，属正常）。
+2. curl.exe 上传 GitHub 资产会 SSL schannel 失败（curl:35）→
+   一律用 PowerShell Invoke-RestMethod -Method Post -InFile 上传。
+3. 本机未安装 gh CLI；Bash 工具不可用（Windows 主机用 PowerShell）。
+4. 中文文本文件保存用 UTF-8 BOM（记事本才不会乱码）——用户对此非常敏感。
+5. 用户明确要求过：不要在物理桌面操作（若涉及虚拟机/虚拟桌面，一切操作在虚拟桌面内）。
+6. 用户偏好精简直接的回答、表格对比、明确结论，讨厌"AI 味"和空话。
+
+═════════════════════════════════════════════════════════════════
+十、已放弃 / 未实施的方向（了解即可，勿重复探索）
+═════════════════════════════════════════════════════════════════
+1. 统信 UOS v20 兼容版（Oracle VirtualBox 安装统信）：用户已明确放弃，不做 Linux 端。
+2. APK 全自动构建：需要把安卓 keystore 上传 GitHub Secrets（私钥托管 GitHub），
+   用户选择保持手动补传（私钥不离开本地，更安全）。
+3. 保存延迟进一步优化（如 SQLite WAL）：用户已拍板保持 FULL，不折腾。
+
+═════════════════════════════════════════════════════════════════
+十一、当前发布产物清单（release\ 目录，2026-10-04）
+═════════════════════════════════════════════════════════════════
+- LocalVault_1.9.4_x64-setup.exe（6258525B，签名）
+- LocalVault_1.9.4_x64_en-US.msi（8192000B，签名）
+- LocalVault-Portable-x64-v1.9.4.zip（6306578B，绿色版）
+- LocalVault-Fill-v1.9.3.zip（16077B，浏览器插件）
+- LocalVault-v1.9.4-arm64.apk（8387726B，安卓）
+- latest.json、SHA256SUMS.txt（完整 SHA256 清单）
+
+═════════════════════════════════════════════════════════════════
+十二、后续接手第一步（建议顺序）
+═════════════════════════════════════════════════════════════════
+1. 读本文件 → 读发布手册（G:\github\更新版本后，把新版本推送到github.txt）
+2. 核对三处代码一致性：H 盘 / G 盘 / GitHub main（git rev-parse HEAD + ls-remote）
+3. 本地跑一次构建验证环境可用（桌面 + APK）
+4. 任何新需求先对照"老用户兼容性硬约束"（第八节）评估影响
+5. 发布严格按手册 9 步走，特别是第 5 步补传 APK 别漏
+
+=====================================================================
+ 交接完成。祝后续维护顺利。
+=====================================================================
