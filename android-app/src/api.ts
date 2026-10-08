@@ -15,7 +15,9 @@ export interface MobileStatus {
   entryCount: number;
   /** 设备支持生物识别 */
   bioAvailable: boolean;
-  /** 锁定状态可用指纹解锁（有缓存会话） */
+  /** 用户已在设置中开启指纹解锁（未开启则解锁界面绝不出现指纹入口） */
+  bioEnabled: boolean;
+  /** 锁定状态可用指纹解锁（需已开启开关 + 有缓存会话） */
   bioUsable: boolean;
   /** 已设置密保（可找回主密码） */
   hasSecurity: boolean;
@@ -98,6 +100,8 @@ export const api = {
   mobileLockAll: () => invoke<void>("mobile_lock_all"),
   mobileBiometricAvailable: () => invoke<boolean>("mobile_biometric_available"),
   mobileBiometricUnlock: () => invoke<void>("mobile_biometric_unlock"),
+  mobileBiometricSet: (enabled: boolean) =>
+    invoke<void>("mobile_biometric_set", { enabled }),
   mobileTestBiometric: () => invoke<void>("mobile_test_biometric"),
   mobileShareText: (text: string, subject: string) =>
     invoke<void>("mobile_share_text", { text, subject }),

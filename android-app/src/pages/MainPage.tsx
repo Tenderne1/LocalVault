@@ -13,7 +13,7 @@ interface Props {
 type Tab = "vault" | "sync" | "settings";
 
 export default function MainPage({ status, refresh, onLock }: Props) {
-  const [tab, setTab] = useState<Tab>("sync");
+  const [tab, setTab] = useState<Tab>("vault");
 
   return (
     <div className="app-shell">

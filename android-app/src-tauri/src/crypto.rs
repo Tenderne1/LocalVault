@@ -1,4 +1,4 @@
-// LocalVault 手机端加密核心（v1.9.4 局域网同步版）
+// LocalVault 手机端加密核心（v1.9.5）
 // 与桌面端完全一致的算法：Argon2id(128MB,3,2) + XChaCha20-Poly1305
 use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::{

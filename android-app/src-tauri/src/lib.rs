@@ -1,4 +1,4 @@
-// LocalVault 手机端（Android）v1.9.4 局域网同步版
+// LocalVault 手机端（Android）v1.9.5
 // P2 骨架：主密码设置/解锁/锁定 + 扫码配对 + 基础同步（health/pair/pull）
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -29,8 +29,12 @@ fn bio_key_from_b64(b64: &str) -> Result<[u8; crypto::KEY_LEN], String> {
         .map_err(|_| "指纹会话密钥长度错误".to_string())
 }
 
-/// 解锁成功后持久化指纹会话密钥（Keystore 加密落盘，冷启动后指纹仍可用）
+/// 解锁成功后持久化指纹会话密钥（Keystore 加密落盘，冷启动后指纹仍可用）。
+/// 仅在用户已开启指纹解锁时才持久化；未开启则保持不产生任何指纹会话。
 fn persist_bio_key(s: &store::MobileStore) {
+    if !s.bio_enabled() {
+        return;
+    }
     if let Some(k) = s.current_bio_key() {
         android_jni::save_bio_key(&bio_key_b64(k));
     }
@@ -46,7 +50,9 @@ struct MobileStatus {
     entry_count: usize,
     /// 设备支持生物识别（指纹/面部）
     bio_available: bool,
-    /// 当前锁定状态是否可用指纹解锁（内存会话密钥或持久化 Keystore 会话密钥）
+    /// 用户已在设置中开启指纹解锁（未开启则锁定界面绝不出现指纹入口）
+    bio_enabled: bool,
+    /// 当前锁定状态是否可用指纹解锁（需：已开启开关 + 设备支持 + 有可用会话）
     bio_usable: bool,
     /// 已设置密保（可找回主密码）
     has_security: bool,
@@ -60,7 +66,9 @@ fn mobile_status(store: State<'_, Mutex<MobileStore>>) -> Result<MobileStatus, S
         None => (false, None, 0),
     };
     let bio_available = android_jni::biometric_available();
+    let bio_enabled = s.bio_enabled();
     let bio_usable = bio_available
+        && bio_enabled
         && !unlocked
         && (s.can_bio_unlock() || android_jni::load_bio_key().is_some());
     Ok(MobileStatus {
@@ -70,6 +78,7 @@ fn mobile_status(store: State<'_, Mutex<MobileStore>>) -> Result<MobileStatus, S
         pairing,
         entry_count,
         bio_available,
+        bio_enabled,
         bio_usable,
         has_security: s.has_security(),
     })
@@ -152,6 +161,32 @@ async fn mobile_biometric_unlock(store: State<'_, Mutex<MobileStore>>) -> Result
 fn mobile_test_biometric() -> Result<(), String> {
     if !android_jni::biometric_authenticate()? {
         return Err("指纹验证未通过或已取消".into());
+    }
+    Ok(())
+}
+
+/// 设置指纹解锁开关。
+/// 开启：要求设备支持 → 写入开关 → 若当前已解锁则持久化会话密钥（供锁定后指纹解锁）。
+/// 关闭：写入开关 → 清除内存会话 → 清除 Keystore 持久化密钥（指纹入口立即消失）。
+#[tauri::command]
+async fn mobile_biometric_set(
+    enabled: bool,
+    store: State<'_, Mutex<MobileStore>>,
+) -> Result<(), String> {
+    if !enabled {
+        {
+            let mut s = store.lock().map_err(|_| "状态锁异常".to_string())?;
+            s.set_bio_enabled(false)?;
+        }
+        android_jni::delete_bio_key();
+        return Ok(());
+    }
+    {
+        let mut s = store.lock().map_err(|_| "状态锁异常".to_string())?;
+        s.set_bio_enabled(true)?;
+        if s.is_unlocked() {
+            persist_bio_key(&s);
+        }
     }
     Ok(())
 }
@@ -963,6 +998,7 @@ pub fn run() {
             mobile_change_master,
             mobile_biometric_available,
             mobile_biometric_unlock,
+            mobile_biometric_set,
             mobile_test_biometric,
             mobile_share_text,
             mobile_install_apk,

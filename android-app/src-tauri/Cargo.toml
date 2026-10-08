@@ -1,6 +1,6 @@
 [package]
 name = "localvault-mobile"
-version = "1.9.4"
+version = "1.9.5"
 description = "LocalVault 手机端（局域网同步）"
 edition = "2021"
 rust-version = "1.77.2"

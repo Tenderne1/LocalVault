@@ -1,6 +1,6 @@
 [package]
 name = "localvault"
-version = "1.9.4"
+version = "1.9.5"
 description = "Local-first password manager"
 authors = ["LocalVault Project"]
 edition = "2021"
@@ -27,7 +27,8 @@ zeroize = "1"
 dirs = "6"
 hex = "0.4"
 encoding_rs = "0.8"
-windows = { version = "0.61", features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_GdiPlus", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Com", "ApplicationModel_DataTransfer", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking", "Win32_Networking_WinSock"] }
+windows = { version = "0.61", features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_GdiPlus", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Com", "Win32_System_WinRT", "ApplicationModel_DataTransfer", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking", "Win32_Networking_WinSock", "Security_Credentials_UI", "Win32_Security_Cryptography", "Win32_Foundation", "Foundation"] }
+windows-future = "0.2"
 base64 = "0.22"
 tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"

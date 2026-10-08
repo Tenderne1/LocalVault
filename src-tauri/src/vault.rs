@@ -24,12 +24,38 @@ const BACKUP_DEFAULT_RETENTION:usize=10;
 
 // Online unlock protection. This deliberately complements Argon2id rather than replacing it:
 // Argon2id slows each guess, while this stateful policy limits repeated guesses made through the app.
+// 安全策略现为可配置（security-policy.json），以下常量仅作默认值。
 const UNLOCK_WINDOW_MS:i64=10*60*1000;
-const CAPTCHA_AFTER_FAILURES:usize=3;
-const LOCK_AFTER_5_MS:i64=30*1000;
-const LOCK_AFTER_10_MS:i64=5*60*1000;
-const LOCK_AFTER_15_MS:i64=30*60*1000;
-const LOCK_AFTER_20_MS:i64=60*60*1000;
+const DEFAULT_CAPTCHA_AFTER:usize=3;
+const DEFAULT_RECOVERY_AFTER:usize=20;
+const MIN_LOCK_SECONDS:u64=5;
+const MAX_LOCK_SECONDS:u64=86400;
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct LockTier{pub failures:usize,pub lock_seconds:u64}
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct SecurityPolicy{
+ pub captcha_after:usize,
+ pub tiers:Vec<LockTier>,
+ pub recovery_after:usize,
+}
+impl Default for SecurityPolicy{
+ fn default()->Self{
+  Self{
+   captcha_after:DEFAULT_CAPTCHA_AFTER,
+   tiers:vec![
+    LockTier{failures:5,lock_seconds:30},
+    LockTier{failures:10,lock_seconds:300},
+    LockTier{failures:15,lock_seconds:600},
+    LockTier{failures:20,lock_seconds:1800},
+   ],
+   recovery_after:DEFAULT_RECOVERY_AFTER,
+  }
+ }
+}
 
 #[derive(Debug,Clone,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
@@ -38,6 +64,10 @@ pub struct UnlockSecurityState{
  pub captcha_required:bool,
  pub lock_until:Option<i64>,
  pub captcha_svg:Option<String>,
+ pub recovery_required:bool,
+ pub captcha_after:usize,
+ pub tiers:Vec<LockTier>,
+ pub recovery_after:usize,
 }
 
 #[cfg(windows)]
@@ -131,6 +161,24 @@ pub struct BackupData{pub entries:Vec<Entry>,pub categories:Vec<Category>}
 pub struct DiagnosticsSettings{pub enabled:bool}
 impl Default for DiagnosticsSettings{fn default()->Self{Self{enabled:false}}}
 
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct DiagnosticsLogLine{pub ts:String,pub version:String,pub event:String}
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct HelloStatus{pub available:bool,pub enabled:bool}
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct ClipboardSettings{pub clear_seconds:u32}
+impl Default for ClipboardSettings{fn default()->Self{Self{clear_seconds:30}}}
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct ScreenProtectSettings{pub enabled:bool}
+impl Default for ScreenProtectSettings{fn default()->Self{Self{enabled:false}}}
+
 pub struct VaultManager{path:PathBuf,dek:Option<[u8;DEK_LEN]>,recovery_pending_dek:Option<[u8;DEK_LEN]>,captcha:Option<(String,String)>,session_key:Option<[u8;32]>}
 impl VaultManager{
  pub fn new()->Self{
@@ -152,8 +200,61 @@ impl VaultManager{
  fn log_event(&self,event:&str){if !self.load_diagnostics_settings().enabled{return}let path=self.diagnostics_log_path();if let Ok(mut f)=OpenOptions::new().create(true).append(true).open(path){let _=writeln!(f,"{}\t{}\t{}",now_ms(),APP_VERSION,event);}}
  pub fn diagnostics_settings(&self)->Result<DiagnosticsSettings,String>{Ok(self.load_diagnostics_settings())}
  pub fn set_diagnostics_enabled(&self,enabled:bool)->Result<DiagnosticsSettings,String>{let s=DiagnosticsSettings{enabled};self.store_diagnostics_settings(&s)?;if !enabled{let _=fs::remove_file(self.diagnostics_log_path());}else{self.log_event("logging_enabled");}Ok(s)}
+ fn clipboard_config_path(&self)->PathBuf{self.path.parent().unwrap_or_else(||Path::new(".")).join("clipboard-settings.json")}
+ fn load_clipboard_settings(&self)->ClipboardSettings{fs::read(self.clipboard_config_path()).ok().and_then(|b|serde_json::from_slice::<ClipboardSettings>(&b).ok()).unwrap_or_default()}
+ fn store_clipboard_settings(&self,s:&ClipboardSettings)->Result<(),String>{let path=self.clipboard_config_path();let tmp=path.with_extension("json.new");let data=serde_json::to_vec_pretty(s).map_err(|e|e.to_string())?;fs::write(&tmp,data).map_err(|e|e.to_string())?;if path.exists(){let _=fs::remove_file(&path);}fs::rename(&tmp,&path).map_err(|e|e.to_string())?;Ok(())}
+ pub fn clipboard_settings(&self)->Result<ClipboardSettings,String>{Ok(self.load_clipboard_settings())}
+ pub fn set_clipboard_clear_seconds(&self,seconds:u32)->Result<ClipboardSettings,String>{if !(30..=180).contains(&seconds){return Err("剪贴板自动清空时间必须在 30~180 秒之间".into())}let s=ClipboardSettings{clear_seconds:seconds};self.store_clipboard_settings(&s)?;Ok(s)}
+ fn screen_protect_config_path(&self)->PathBuf{self.path.parent().unwrap_or_else(||Path::new(".")).join("privacy-settings.json")}
+ fn load_screen_protect_settings(&self)->ScreenProtectSettings{fs::read(self.screen_protect_config_path()).ok().and_then(|b|serde_json::from_slice::<ScreenProtectSettings>(&b).ok()).unwrap_or_default()}
+ fn store_screen_protect_settings(&self,s:&ScreenProtectSettings)->Result<(),String>{let path=self.screen_protect_config_path();let tmp=path.with_extension("json.new");let data=serde_json::to_vec_pretty(s).map_err(|e|e.to_string())?;fs::write(&tmp,data).map_err(|e|e.to_string())?;if path.exists(){let _=fs::remove_file(&path);}fs::rename(&tmp,&path).map_err(|e|e.to_string())?;Ok(())}
+ pub fn screen_protect_settings(&self)->Result<ScreenProtectSettings,String>{Ok(self.load_screen_protect_settings())}
+ pub fn set_screen_protect_enabled(&self,enabled:bool)->Result<ScreenProtectSettings,String>{let s=ScreenProtectSettings{enabled};self.store_screen_protect_settings(&s)?;Ok(s)}
+ fn security_policy_path(&self)->PathBuf{self.path.parent().unwrap_or_else(||Path::new(".")).join("security-policy.json")}
+ fn load_security_policy(&self)->SecurityPolicy{fs::read(self.security_policy_path()).ok().and_then(|b|serde_json::from_slice::<SecurityPolicy>(&b).ok()).unwrap_or_default()}
+ fn store_security_policy(&self,s:&SecurityPolicy)->Result<(),String>{let path=self.security_policy_path();let tmp=path.with_extension("json.new");let data=serde_json::to_vec_pretty(s).map_err(|e|e.to_string())?;fs::write(&tmp,data).map_err(|e|e.to_string())?;if path.exists(){let _=fs::remove_file(&path);}fs::rename(&tmp,&path).map_err(|e|e.to_string())?;Ok(())}
+ pub fn security_policy(&self)->Result<SecurityPolicy,String>{Ok(self.load_security_policy())}
+ pub fn set_security_policy(&self,p:&SecurityPolicy)->Result<SecurityPolicy,String>{
+   if p.captcha_after<1{return Err("验证码触发次数至少为 1".into())}
+   if p.captcha_after>100{return Err("验证码触发次数不能超过 100".into())}
+   if p.tiers.is_empty(){return Err("至少需要一档锁定规则".into())}
+   if p.tiers.len()>10{return Err("锁定档位最多 10 档".into())}
+   let mut prev=0usize;
+   for t in &p.tiers{
+     if t.failures<=prev{return Err("锁定档位的失败次数必须递增".into())}
+     if t.failures>200{return Err("单档失败次数不能超过 200".into())}
+     if t.lock_seconds<MIN_LOCK_SECONDS||t.lock_seconds>MAX_LOCK_SECONDS{return Err(format!("锁定时间必须在 {}~{} 秒之间",MIN_LOCK_SECONDS,MAX_LOCK_SECONDS))}
+     prev=t.failures;
+   }
+   if p.recovery_after<1{return Err("Recovery 强制解锁次数至少为 1".into())}
+   if p.recovery_after>200{return Err("Recovery 强制解锁次数不能超过 200".into())}
+   self.store_security_policy(p)?;
+   self.log_event(&format!("security_policy_updated|{}tiers",p.tiers.len()));
+   Ok(p.clone())
+ }
  pub fn clear_diagnostics_log(&self)->Result<(),String>{let _=fs::remove_file(self.diagnostics_log_path());Ok(())}
  pub fn diagnostics_log_path_string(&self)->String{self.diagnostics_log_path().display().to_string()}
+ /// 读取安全事件日志：返回最近 N 条（默认 200），每条含时间戳、版本、事件；
+ /// 日志文件不存在或为空时返回空列表。单次最多读 100KB，防超大文件拖垮 UI。
+ pub fn read_diagnostics_log(&self,max_lines:Option<usize>)->Result<Vec<DiagnosticsLogLine>,String>{
+   let path=self.diagnostics_log_path();
+   let limit=max_lines.unwrap_or(200).clamp(1,2000);
+   if !path.exists(){return Ok(Vec::new())}
+   let meta=fs::metadata(&path).map_err(|e|e.to_string())?;
+   if meta.len()>2_000_000{return Ok(vec![DiagnosticsLogLine{ts:"".into(),version:"".into(),event:"日志文件过大（>2MB），请先在系统里清空日志".into()}])}
+   let raw=fs::read_to_string(&path).map_err(|e|e.to_string())?;
+   let mut out=Vec::new();
+   for line in raw.lines().rev(){
+     if out.len()>=limit{break}
+     let mut parts=line.splitn(3,'\t');
+     let ts=parts.next().unwrap_or("").trim().to_string();
+     let version=parts.next().unwrap_or("").trim().to_string();
+     let event=parts.next().unwrap_or("").trim().to_string();
+     out.push(DiagnosticsLogLine{ts,version,event});
+   }
+   out.reverse();
+   Ok(out)
+ }
  fn load_backup_settings(&self)->BackupSettings{fs::read(self.backup_config_path()).ok().and_then(|b|serde_json::from_slice::<BackupSettings>(&b).ok()).unwrap_or_default()}
  fn store_backup_settings(&self,settings:&BackupSettings)->Result<(),String>{let path=self.backup_config_path();let tmp=path.with_extension("json.new");let data=serde_json::to_vec_pretty(settings).map_err(|e|e.to_string())?;fs::write(&tmp,data).map_err(|e|e.to_string())?;if path.exists(){let _=fs::remove_file(&path);}fs::rename(&tmp,&path).map_err(|e|e.to_string())?;Ok(())}
  fn path_is_inside(&self,path:&Path)->bool{let base=self.path.parent().unwrap_or_else(||Path::new(".")).canonicalize().unwrap_or_else(|_|self.path.parent().unwrap_or_else(||Path::new(".")).to_path_buf());let target=if path.exists(){path.canonicalize().unwrap_or_else(|_|path.to_path_buf())}else if let Some(parent)=path.parent(){if parent.exists(){parent.canonicalize().unwrap_or_else(|_|parent.to_path_buf()).join(path.file_name().unwrap_or_else(||std::ffi::OsStr::new("")))}else{path.to_path_buf()}}else{path.to_path_buf()};#[cfg(windows)]{let b=base.to_string_lossy().to_ascii_lowercase();let t=target.to_string_lossy().to_ascii_lowercase();return t==b||t.starts_with(&(b+"\\"));}#[cfg(not(windows))]{target==base||target.starts_with(&base)}}
@@ -251,8 +352,12 @@ impl VaultManager{
    c.execute("INSERT OR REPLACE INTO meta(key,value)VALUES('unlock_failures',?)",params![data]).map_err(|e|e.to_string())?;
    Ok(())
  }
- fn lock_duration(attempts:usize)->i64{
-   if attempts>=20{LOCK_AFTER_20_MS}else if attempts>=15{LOCK_AFTER_15_MS}else if attempts>=10{LOCK_AFTER_10_MS}else if attempts>=5{LOCK_AFTER_5_MS}else{0}
+ fn lock_duration(attempts:usize,policy:&SecurityPolicy)->i64{
+   let mut ms=0i64;
+   for tier in &policy.tiers{
+     if attempts>=tier.failures{ms=(tier.lock_seconds as i64)*1000;}
+   }
+   ms
  }
  fn current_unlock_state(&mut self,c:&Connection)->Result<(Vec<i64>,Option<i64>),String>{
    let times=self.read_failure_times(c);
@@ -290,21 +395,24 @@ impl VaultManager{
  pub(crate) fn security_state(&mut self)->Result<UnlockSecurityState,String>{
    self.unprotect_storage()?;
    let result=(||{
+     let policy=self.load_security_policy();
      let c=self.db()?;let (times,lock_until)=self.current_unlock_state(&c)?;
-     let captcha_required=times.len()>=CAPTCHA_AFTER_FAILURES;
+     let captcha_required=times.len()>=policy.captcha_after;
      let captcha_svg=if captcha_required{
        if let Some((_,svg))=self.captcha.as_ref(){Some(svg.clone())}else{Some(self.new_captcha())}
      }else{self.captcha=None;None};
-     Ok(UnlockSecurityState{failed_attempts:times.len(),captcha_required,lock_until,captcha_svg})
+     let recovery_required=self.meta(&c,"unlock_recovery_required").is_ok();
+     Ok(UnlockSecurityState{failed_attempts:times.len(),captcha_required,lock_until,captcha_svg,recovery_required,captcha_after:policy.captcha_after,tiers:policy.tiers,recovery_after:policy.recovery_after})
    })();
    let _=self.protect_storage();result
  }
  fn before_unlock(&mut self,captcha:Option<&str>)->Result<(),String>{
    self.unprotect_storage()?;
    let result=(||{
+     let policy=self.load_security_policy();
      let c=self.db()?;let (times,lock_until)=self.current_unlock_state(&c)?;
      if let Some(until)=lock_until{return Err(format!("请稍候再试，当前已锁定 {} 秒",((until-now_ms()+999)/1000).max(1)))}
-     if times.len()>=CAPTCHA_AFTER_FAILURES{
+     if times.len()>=policy.captcha_after{
        let expected=self.captcha.as_ref().map(|x|x.0.clone()).ok_or("请先刷新验证码")?;
        if captcha.unwrap_or("").trim().eq_ignore_ascii_case(&expected)==false{
          // A wrong CAPTCHA must invalidate the old challenge immediately.
@@ -318,25 +426,46 @@ impl VaultManager{
    if result.is_err(){let _=self.protect_storage();}result
  }
  fn record_unlock_failure(&mut self)->Result<UnlockSecurityState,String>{
+   let policy=self.load_security_policy();
    let c=self.db()?;let mut times=self.read_failure_times(&c);let now=now_ms();times.push(now);
    self.write_failure_times(&c,&times)?;
-   let duration=Self::lock_duration(times.len());
+   let duration=Self::lock_duration(times.len(),&policy);
    if duration>0{let until=now.saturating_add(duration);c.execute("INSERT OR REPLACE INTO meta(key,value)VALUES('unlock_lock_until',?)",params![until.to_string().into_bytes()]).map_err(|e|e.to_string())?;}
-   let captcha_required=times.len()>=CAPTCHA_AFTER_FAILURES;
+   // 连续失败达到上限后，解锁必须同时提供主密码 + Recovery Code（仅当用户已启用恢复码）
+   let recovery_required=times.len()>=policy.recovery_after&&self.meta(&c,"recovery_wrapped").is_ok();
+   if recovery_required{c.execute("INSERT OR REPLACE INTO meta(key,value)VALUES('unlock_recovery_required',?)",params![b"1".to_vec()]).map_err(|e|e.to_string())?;}
+   let captcha_required=times.len()>=policy.captcha_after;
    let captcha_svg=if captcha_required{Some(self.new_captcha())}else{None};
-   Ok(UnlockSecurityState{failed_attempts:times.len(),captcha_required,lock_until:if duration>0{Some(now+duration)}else{None},captcha_svg})
+   Ok(UnlockSecurityState{failed_attempts:times.len(),captcha_required,lock_until:if duration>0{Some(now+duration)}else{None},captcha_svg,recovery_required,captcha_after:policy.captcha_after,tiers:policy.tiers,recovery_after:policy.recovery_after})
  }
  fn clear_unlock_failures(&mut self,c:&Connection)->Result<(),String>{
    self.write_failure_times(c,&[])?;
    c.execute("INSERT OR REPLACE INTO meta(key,value)VALUES('unlock_lock_until',?)",params![b"0".to_vec()]).map_err(|e|e.to_string())?;
+   c.execute("DELETE FROM meta WHERE key='unlock_recovery_required'",[]).map_err(|e|e.to_string())?;
    self.captcha=None;Ok(())
  }
  pub fn create(&mut self,pass:&str,confirm:&str)->Result<(),String>{let t0=now_ms();validate_new_master_password(pass)?;if pass!=confirm{return Err("两次输入的主密码不一致".into())}if self.path.exists(){return Err("Vault 已存在".into())}let c=self.db()?;let salt=Self::random::<16>();let dek=Self::random::<32>();let mut kek=Self::derive(pass,&salt)?;self.log_event(&format!("create_argon_done|{}ms",now_ms()-t0));let wrapped=Self::enc(&kek,&dek,b"LocalVault|wrapped_dek|v1")?;kek.zeroize();c.execute("INSERT INTO meta(key,value)VALUES('format_version',?),('salt',?),('wrapped_dek',?)",params![FORMAT_VERSION.to_be_bytes().to_vec(),salt.to_vec(),wrapped]).map_err(|e|e.to_string())?;self.dek=Some(dek);let mut sk=[0u8;32];OsRng.fill_bytes(&mut sk);self.session_key=Some(sk);self.log_event("create_success");self.log_event(&format!("create_done|{}ms",now_ms()-t0));Ok(())}
- pub fn unlock(&mut self,pass:&str,captcha:Option<&str>)->Result<Vec<Entry>,String>{
+ pub fn unlock(&mut self,pass:&str,captcha:Option<&str>,recovery_code:Option<&str>,recovery_answers:Option<&[String]>)->Result<Vec<Entry>,String>{
    self.before_unlock(captcha)?;
    self.unprotect_storage()?;
    let auth_result=(||{
-     let c=self.db()?;let salt=self.salt(&c)?;let w=self.meta(&c,"wrapped_dek")?;let mut kek=Self::derive(pass,&salt)?;
+     let c=self.db()?;
+     // 连续失败达到上限后：除主密码外还必须通过 Recovery Code + 密保答案验证
+     if self.meta(&c,"unlock_recovery_required").is_ok(){
+       let answers=recovery_answers.unwrap_or(&[]);
+       let code=recovery_code.unwrap_or("");
+       if answers.len()!=3{return Err("最高安全锁定：请输入 Recovery Code 并填写 3 组密保答案".into())}
+       let salt=self.salt(&c)?;
+       let w=self.meta(&c,"recovery_wrapped").map_err(|_|"恢复凭据缺失，无法解锁".to_string())?;
+       let combo=format!("{}\0{}\0{}\0{}",code.trim(),answers[0].trim(),answers[1].trim(),answers[2].trim());
+       let mut rk=Self::derive(&combo,&salt)?;
+       let mut raw=Self::dec(&rk,&w,b"LocalVault|recovery|v1").map_err(|_|"Recovery Code 或密保答案错误，解锁被拒绝".to_string())?;
+       rk.zeroize();
+       let valid=raw.len()==DEK_LEN;
+       raw.zeroize();
+       if !valid{return Err("Recovery Code 或密保答案错误，解锁被拒绝".into())}
+     }
+     let salt=self.salt(&c)?;let w=self.meta(&c,"wrapped_dek")?;let mut kek=Self::derive(pass,&salt)?;
      let mut raw=Self::dec(&kek,&w,b"LocalVault|wrapped_dek|v1").map_err(|_|"bad credentials".to_string())?;
      kek.zeroize();
      let valid=raw.len()==32;
@@ -454,21 +583,23 @@ impl VaultManager{
    let salt=self.salt(&c)?;
    let wrapped=self.meta(&c,"wrapped_dek")?;
    let mut kek=Self::derive(master_password,&salt)?;
-   let mut raw=Self::dec(&kek,&wrapped,b"LocalVault|wrapped_dek|v1").map_err(|_|"原 Vault 主密码错误，导出已取消".to_string())?;
+   let mut raw=Self::dec(&kek,&wrapped,b"LocalVault|wrapped_dek|v1").map_err(|_|{kek.zeroize();self.log_event("export_failed|wrong_master");"原 Vault 主密码错误，导出已取消".to_string()})?;
    kek.zeroize();
-   if raw.len()!=DEK_LEN{raw.zeroize();return Err("原 Vault 密钥无效".into())}
+   if raw.len()!=DEK_LEN{raw.zeroize();self.log_event("export_failed|bad_key");return Err("原 Vault 密钥无效".into())}
    let same=raw.as_slice()==dek.as_slice();raw.zeroize();
-   if !same{return Err("当前 Vault 密钥校验失败，导出已取消".into())}
+   if !same{self.log_event("export_failed|key_mismatch");return Err("当前 Vault 密钥校验失败，导出已取消".into())}
    let all=self.read_entries(&c,&dek)?;
    let mut entries:Vec<Entry>=all.into_iter().filter(|e|entry_ids.contains(&e.id)).collect();
    for e in entries.iter_mut(){e.password_encrypted=None;e.password_score=None;e.password_reused=None;}
+   let entry_count=entries.len();
    let payload=serde_json::to_vec(&ExportPackage{version:2,entries}).map_err(|e|e.to_string())?;
    let ct=Self::enc(&dek,&payload,b"LocalVault|export|v2")?;
    let mut out=EXPORT_MAGIC.to_vec();
    out.extend_from_slice(&salt);
    out.extend_from_slice(&wrapped);
    out.extend_from_slice(&ct);
-   fs::write(destination,out).map_err(|e|e.to_string())?;
+   fs::write(destination,out).map_err(|e|{self.log_event("export_failed|io");e.to_string()})?;
+   self.log_event(&format!("export_done|{}entries",entry_count));
    Ok(())
  }
 
@@ -629,6 +760,7 @@ impl VaultManager{
  /// 局域网同步用：合并手机端推送（按 updated_at 新者胜）+ 删除，全量写盘。
  pub fn sync_apply(&mut self,incoming:&[Entry],deleted_ids:&[String])->Result<(),String>{
    let dek=self.dek.ok_or("Vault locked")?;
+   self.log_event(&format!("sync_apply_start|{}in|{}del",incoming.len(),deleted_ids.len()));
    let c=self.db()?;
    let mut all=self.read_entries(&c,&dek)?;
    drop(c);
@@ -646,6 +778,7 @@ impl VaultManager{
      }
    }
    self.save(&all)?;
+   self.log_event("sync_apply_done");
    Ok(())
  }
  /// 局域网同步用：应用手机端分类操作（create/update/delete；不存在则安全跳过）。
@@ -860,6 +993,133 @@ impl VaultManager{
  }
 
  pub fn update_security_settings(&mut self,current_password:&str,new_password:Option<&str>,new_confirm:Option<&str>,questions:Option<&[String]>,answers:Option<&[String]>)->Result<Option<String>,String>{let d=self.verify_master_dek(current_password)?;if new_password.is_none()&&questions.is_none(){return Err("至少选择一项修改".into())}let c=self.db()?;let salt=self.salt(&c)?;let mut new_code=None;let tx=c.unchecked_transaction().map_err(|e|e.to_string())?;if let Some(p)=new_password{let confirm=new_confirm.unwrap_or("");validate_new_master_password(p)?;if p==current_password{return Err("新主密码不能与旧主密码相同".into())}if p!=confirm{return Err("两次输入的新主密码不一致".into())}let mut kek=Self::derive(p,&salt)?;let wrapped=Self::enc(&kek,&d,b"LocalVault|wrapped_dek|v1")?;kek.zeroize();tx.execute("INSERT OR REPLACE INTO meta(key,value)VALUES('wrapped_dek',?)",params![wrapped]).map_err(|e|e.to_string())?;}if let Some(qs)=questions{let ans=answers.ok_or("缺少密保答案")?;if qs.len()!=3||ans.len()!=3{return Err("必须有 3 组问题/答案".into())}if qs.iter().any(|q|q.trim().is_empty())||ans.iter().any(|a|a.trim().is_empty()){return Err("密保问题和答案不能为空".into())}let code=self.generate_recovery_code()?;let combo=format!("{}\0{}\0{}\0{}",code,ans[0].trim(),ans[1].trim(),ans[2].trim());let mut rk=Self::derive(&combo,&salt)?;let wrapped=Self::enc(&rk,&d,b"LocalVault|recovery|v1")?;rk.zeroize();let raw_qs=serde_json::to_vec(qs).map_err(|e|e.to_string())?;tx.execute("INSERT OR REPLACE INTO meta(key,value)VALUES('recovery_wrapped',?),('recovery_questions',?)",params![wrapped,raw_qs]).map_err(|e|e.to_string())?;new_code=Some(code)}tx.commit().map_err(|e|e.to_string())?;self.dek=Some(d);Ok(new_code)}
+
+ // ============ Windows Hello + DPAPI 生物解锁 ============
+ fn hello_blob_path(&self)->PathBuf{self.path.parent().unwrap_or_else(||Path::new(".")).join("hello.bin")}
+ /// 查询 Hello 状态：设备是否支持（Windows Hello）、是否已启用。
+ /// 注意：绝不调用 db()（避免启动时凭空创建 vault.db）。Vault 不存在时直接返回未启用。
+ pub fn hello_status(&self)->Result<HelloStatus,String>{
+   let available=crate::hello::can_enable();
+   if !self.path.exists(){return Ok(HelloStatus{available,enabled:false})}
+   // 启用状态要求三者一致：DB meta 存在 + hello.bin 存在 + DPAPI 能成功解出合法 wrapping key
+   let enabled=(||->Result<(),String>{
+     let c=Connection::open(&self.path).map_err(|e|e.to_string())?;
+     let w=self.meta(&c,"hello_wrapped_dek").map_err(|_|"no meta".to_string())?;
+     if w.len()<NONCE_LEN+16{return Err("bad meta".to_string())}
+     let blob=fs::read(self.hello_blob_path()).map_err(|_|"no blob".to_string())?;
+     let payload=crate::hello::decode_blob(&blob)?;
+     let mut wrapping=crate::hello::dpapi_unprotect(&payload).map_err(|_|"dpapi fail".to_string())?;
+     if wrapping.len()!=DEK_LEN{wrapping.zeroize();return Err("bad key len".to_string())}
+     wrapping.zeroize();
+     Ok(())
+   })().is_ok();
+   Ok(HelloStatus{available,enabled})
+ }
+ /// 启用：需已解锁（持有 DEK）。事务式流程，任何一步失败回滚，不留半截状态。
+ /// 1. Windows Hello 验证 → 2. 读当前 DEK → 3. 随机生成 wrapping key →
+ /// 4. DPAPI Protect(wrapping) → 5. XChaCha20 用 wrapping 加密 DEK →
+ /// 6. 写临时 blob → 7. 写 DB meta（同一事务）→ 8. 重新读取并验证解密 →
+ /// 9. commit → 10. 原子替换 hello.bin → 11. 失败则清理临时文件并回滚。
+ pub fn enable_hello(&mut self,hwnd:isize)->Result<(),String>{
+   let dek=self.dek.ok_or("Vault 未解锁，无法启用 Windows Hello")?;
+   if !crate::hello::can_enable(){
+     let hello=crate::hello::hello_supported();
+     let reason=if !hello{"此设备未配置 Windows Hello（指纹 / 人脸 / PIN）。请先在 Windows 设置 → 账户 → 登录选项中启用。"}else{"Windows Hello 不可用。"};
+     return Err(reason.into())
+   }
+   if !crate::hello::request_verification_with_window("启用 LocalVault 生物解锁，请验证你的身份。",hwnd)?{return Err("身份验证已取消或未通过".into())}
+   // 生成随机 wrapping key，用其加密 DEK（XChaCha20-Poly1305）
+   let mut wrapping=Self::random::<32>();
+   let wrapped=Self::enc(&wrapping,&dek,b"LocalVault|hello_wrapped_dek|v1")?;
+   // DPAPI 保护 wrapping key（绑定当前用户+机器上下文）
+   let protected=crate::hello::dpapi_protect(&wrapping)?;
+   wrapping.zeroize();
+   let blob=crate::hello::encode_blob(&protected);
+   let path=self.hello_blob_path();
+   // 先写 DB meta（事务），再写临时 blob，最后原子替换——任一步失败都回滚
+   self.unprotect_storage()?;
+   let write_db:Result<(),String>=(||{
+     let c=self.db()?;
+     let tx=c.unchecked_transaction().map_err(|e|e.to_string())?;
+     tx.execute("INSERT OR REPLACE INTO meta(key,value)VALUES('hello_wrapped_dek',?)",params![wrapped]).map_err(|e|e.to_string())?;
+     tx.commit().map_err(|e|e.to_string())?;
+     Ok(())
+   })();
+   let _=self.protect_storage();
+   write_db?;
+   // 写临时 blob 再原子替换
+   let tmp=path.with_extension("new");
+   fs::write(&tmp,&blob).map_err(|e|e.to_string())?;
+   if path.exists(){let _=fs::remove_file(&path);}
+   fs::rename(&tmp,&path).map_err(|e|{let _=fs::remove_file(&tmp);e.to_string()})?;
+   // 验证：重新读 blob → DPAPI 解 → 长度校验 → 用 wrapping 解 wrapped_dek → 与 DEK 一致
+   let verify:Result<(),String>=(||{
+     let rb=fs::read(&path).map_err(|e|e.to_string())?;
+     let payload=crate::hello::decode_blob(&rb)?;
+     let mut rw=crate::hello::dpapi_unprotect(&payload).map_err(|e|e.to_string())?;
+     if rw.len()!=DEK_LEN{rw.zeroize();return Err("Windows Hello 密钥数据损坏".into())}
+     let mut k=[0u8;DEK_LEN];k.copy_from_slice(&rw);rw.zeroize();
+     let c=self.db()?;
+     let w=self.meta(&c,"hello_wrapped_dek").map_err(|_|"未启用 Windows Hello 解锁".to_string())?;
+     let mut raw=Self::dec(&k,&w,b"LocalVault|hello_wrapped_dek|v1").map_err(|_|"Windows Hello 密钥无效".to_string())?;
+     k.zeroize();
+     if raw.len()!=DEK_LEN||raw!=dek{raw.zeroize();return Err("启用验证失败：DEK 不一致".into())}
+     raw.zeroize();
+     Ok(())
+   })();
+   if verify.is_err(){
+     // 回滚：删 blob + 删 DB meta
+     let _=fs::remove_file(&path);
+     self.unprotect_storage()?;
+     let _:Result<(),String>=(||{let c=self.db()?;c.execute("DELETE FROM meta WHERE key='hello_wrapped_dek'",[]).map_err(|e|e.to_string())?;Ok(())})();
+     let _=self.protect_storage();
+     return Err(verify.err().unwrap_or_else(||"启用验证失败".into()))
+   }
+   self.log_event("hello_enabled");
+   Ok(())
+ }
+ /// 停用：删除 DB meta + hello.bin。无孤儿密钥问题（DPAPI 无持久密钥概念）。
+ pub fn disable_hello(&mut self)->Result<(),String>{
+   self.unprotect_storage()?;
+   let r:Result<(),String>=(||{let c=self.db()?;c.execute("DELETE FROM meta WHERE key='hello_wrapped_dek'",[]).map_err(|e|e.to_string())?;Ok(())})();
+   let _=self.protect_storage();
+   r?;
+   let _=fs::remove_file(self.hello_blob_path());
+   self.log_event("hello_disabled");
+   Ok(())
+ }
+ /// 生物解锁：弹系统验证框（绑定主窗口 HWND）→ DPAPI 解 wrapping key → 解出 DEK → 复用读取流程。
+ /// 不经过主密码防爆破阶梯（那是针对密码猜测的）；生物验证本身受 Windows 限制。
+ pub fn unlock_with_hello(&mut self,hwnd:isize)->Result<Vec<Entry>,String>{
+   if !crate::hello::can_enable(){return Err("此设备未配置 Windows Hello".into())}
+   if !crate::hello::request_verification_with_window("解锁 LocalVault，请验证你的身份。",hwnd)?{return Err("身份验证已取消".into())}
+   let path=self.hello_blob_path();
+   if !path.exists(){return Err("尚未启用 Windows Hello 解锁".into())}
+   let blob=fs::read(&path).map_err(|e|e.to_string())?;
+   let payload=crate::hello::decode_blob(&blob)?;
+   let mut wrapping=crate::hello::dpapi_unprotect(&payload)?;
+   if wrapping.len()!=DEK_LEN{wrapping.zeroize();return Err("Windows Hello 密钥数据损坏".into())}
+   let mut k=[0u8;DEK_LEN];k.copy_from_slice(&wrapping);wrapping.zeroize();
+   let result=(||{
+     self.unprotect_storage()?;
+     let c=self.db()?;
+     let w=self.meta(&c,"hello_wrapped_dek").map_err(|_|"未启用 Windows Hello 解锁".to_string())?;
+     let mut raw=Self::dec(&k,&w,b"LocalVault|hello_wrapped_dek|v1").map_err(|_|"Windows Hello 密钥无效".to_string())?;
+     k.zeroize();
+     if raw.len()!=DEK_LEN{raw.zeroize();return Err("invalid DEK".into())}
+     let mut d=[0u8;DEK_LEN];d.copy_from_slice(&raw);raw.zeroize();
+     let mut entries=self.read_entries(&c,&d)?;
+     self.clear_unlock_failures(&c)?;
+     let mut sk=[0u8;32];OsRng.fill_bytes(&mut sk);
+     self.session_key=Some(sk);
+     self.sanitize_entries(&mut entries)?;
+     self.dek=Some(d);
+     let _=self.protect_storage();
+     Ok(entries)
+   })();
+   if result.is_ok(){self.log_event("hello_unlock_success")}else{self.log_event("hello_unlock_failed");}
+   result
+ }
 }
 fn now_ms()->i64{use std::time::{SystemTime,UNIX_EPOCH};SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis()as i64}
 impl Drop for VaultManager{fn drop(&mut self){if let Some(mut d)=self.dek.take(){d.zeroize()}if let Some(mut d)=self.recovery_pending_dek.take(){d.zeroize()}if let Some(mut k)=self.session_key.take(){k.zeroize()}self.captcha=None;let _=self.protect_storage();}}

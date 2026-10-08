@@ -2,6 +2,8 @@
 mod autofill;
 mod sync;
 mod vault;
+mod hello;
+mod screen;
 use std::sync::{Arc,Mutex};
 use std::process::Command;
 use tauri::{Manager,RunEvent,State};
@@ -10,11 +12,49 @@ use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri_plugin_autostart::MacosLauncher;
 use autofill::AutofillBridge;
 use sync::SyncBridge;
-use vault::{BackupData,BackupSettings,BootstrapStatus,Category,Entry,HistoryRecord,UnlockSecurityState,VaultManager};
+use vault::{BackupData,BackupSettings,BootstrapStatus,Category,Entry,HistoryRecord,SecurityPolicy,UnlockSecurityState,VaultManager};
 #[tauri::command] fn diagnostics_settings_get(state:State<'_,Arc<Mutex<VaultManager>>>)->Result<vault::DiagnosticsSettings,String>{state.lock().map_err(|_|"state lock poisoned".to_string())?.diagnostics_settings()}
 #[tauri::command] fn diagnostics_settings_set(enabled:bool,state:State<'_,Arc<Mutex<VaultManager>>>)->Result<vault::DiagnosticsSettings,String>{state.lock().map_err(|_|"state lock poisoned".to_string())?.set_diagnostics_enabled(enabled)}
 #[tauri::command] fn diagnostics_log_clear(state:State<'_,Arc<Mutex<VaultManager>>>)->Result<(),String>{state.lock().map_err(|_|"state lock poisoned".to_string())?.clear_diagnostics_log()}
 #[tauri::command] fn diagnostics_log_path(state:State<'_,Arc<Mutex<VaultManager>>>)->String{state.lock().map(|v|v.diagnostics_log_path_string()).unwrap_or_default()}
+#[tauri::command] fn diagnostics_log_read(state:State<'_,Arc<Mutex<VaultManager>>>)->Result<Vec<vault::DiagnosticsLogLine>,String>{state.lock().map_err(|_|"state lock poisoned".to_string())?.read_diagnostics_log(None)}
+#[tauri::command] fn hello_status(state:State<'_,Arc<Mutex<VaultManager>>>)->Result<vault::HelloStatus,String>{state.lock().map_err(|_|"state lock poisoned".to_string())?.hello_status()}
+
+/// 取主窗口 HWND（isize），供 Windows Hello Desktop Interop 使用。
+fn main_hwnd(app:&tauri::AppHandle)->Result<isize,String>{
+  let w=app.get_webview_window("main").ok_or_else(||"找不到主窗口".to_string())?;
+  #[cfg(windows)]{
+    let hwnd=w.hwnd().map_err(|e|format!("获取窗口句柄失败：{e}"))?;
+    return Ok(hwnd.0 as isize)
+  }
+  #[cfg(not(windows))]{let _=w;Err("仅支持 Windows".into())}
+}
+#[tauri::command] async fn hello_enable(app:tauri::AppHandle,state:State<'_,Arc<Mutex<VaultManager>>>)->Result<vault::HelloStatus,String>{let hwnd=main_hwnd(&app)?;let vm=state.inner().clone();tauri::async_runtime::spawn_blocking(move||{vm.lock().map_err(|_|"state lock poisoned".to_string())?.enable_hello(hwnd)?;vm.lock().map_err(|_|"state lock poisoned".to_string())?.hello_status()}).await.map_err(|e|e.to_string())?}
+#[tauri::command] async fn hello_disable(state:State<'_,Arc<Mutex<VaultManager>>>)->Result<vault::HelloStatus,String>{let vm=state.inner().clone();tauri::async_runtime::spawn_blocking(move||{vm.lock().map_err(|_|"state lock poisoned".to_string())?.disable_hello()?;vm.lock().map_err(|_|"state lock poisoned".to_string())?.hello_status()}).await.map_err(|e|e.to_string())?}
+#[tauri::command] async fn hello_unlock(app:tauri::AppHandle,state:State<'_,Arc<Mutex<VaultManager>>>)->Result<Vec<vault::Entry>,String>{let hwnd=main_hwnd(&app)?;let vm=state.inner().clone();let r=tauri::async_runtime::spawn_blocking(move||vm.lock().map_err(|_|"state lock poisoned".to_string())?.unlock_with_hello(hwnd)).await.map_err(|e|e.to_string())?;if r.is_ok(){sync_screen_protect(&app,&state);}r}
+#[tauri::command] fn clipboard_settings_get(state:State<'_,Arc<Mutex<VaultManager>>>)->Result<vault::ClipboardSettings,String>{state.lock().map_err(|_|"state lock poisoned".to_string())?.clipboard_settings()}
+#[tauri::command] fn clipboard_settings_set(clear_seconds:u32,state:State<'_,Arc<Mutex<VaultManager>>>)->Result<vault::ClipboardSettings,String>{state.lock().map_err(|_|"state lock poisoned".to_string())?.set_clipboard_clear_seconds(clear_seconds)}
+#[tauri::command] fn screen_protect_get(state:State<'_,Arc<Mutex<VaultManager>>>)->Result<vault::ScreenProtectSettings,String>{state.lock().map_err(|_|"state lock poisoned".to_string())?.screen_protect_settings()}
+
+/// 对主窗口应用防截屏状态。enabled 仅当设置开启时才调用；失败静默（不影响主流程）。
+fn apply_screen_protect(app:&tauri::AppHandle,enabled:bool){
+  if let Ok(hwnd)=main_hwnd(app){
+    let _=screen::set_window_protect(hwnd,enabled);
+  }
+}
+
+/// 根据「设置是否开启 + Vault 是否解锁」决定窗口防截屏状态。
+fn sync_screen_protect(app:&tauri::AppHandle,state:&State<'_,Arc<Mutex<VaultManager>>>){
+  let enabled=state.lock().ok().and_then(|v|v.screen_protect_settings().ok()).map(|s|s.enabled).unwrap_or(false);
+  let unlocked=state.lock().map(|v|v.is_unlocked()).unwrap_or(false);
+  apply_screen_protect(app,enabled&&unlocked);
+}
+
+#[tauri::command] fn screen_protect_set(enabled:bool,app:tauri::AppHandle,state:State<'_,Arc<Mutex<VaultManager>>>)->Result<vault::ScreenProtectSettings,String>{
+  let s=state.lock().map_err(|_|"state lock poisoned".to_string())?.set_screen_protect_enabled(enabled)?;
+  sync_screen_protect(&app,&state);
+  Ok(s)
+}
 
 
 #[derive(serde::Serialize)]
@@ -123,100 +163,194 @@ fn open_url_in_browser(url:String,browser:Option<String>)->Result<(),String>{
     }
 }
 
+// 剪贴板安全：写入密码时在剪贴板上注册并设置 ExcludeClipboardContentFromMonitorProcessing 格式，
+// 系统因此不会把本次内容收录进 Win+V 剪贴板历史，也不会同步到云剪贴板。
+// 只使用这一个格式：CanIncludeInClipboardHistory / CanUploadToCloudClipboard 是"允许进历史/上云"的
+// 语义（存在即生效），与排除格式同时存在时语义冲突，可能让密码仍被收录，故不设置。
+#[cfg(target_os="windows")]
+fn register_secure_clipboard_formats()->Result<u32,String>{
+    use windows::core::PCWSTR;
+    use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
+
+    let name="ExcludeClipboardContentFromMonitorProcessing";
+    let wide:Vec<u16>=name.encode_utf16().chain(std::iter::once(0)).collect();
+    let id=unsafe{RegisterClipboardFormatW(PCWSTR(wide.as_ptr()))};
+    if id==0{
+        return Err(format!("注册 Windows 安全剪贴板格式失败：{}",name));
+    }
+    Ok(id)
+}
+
+#[cfg(target_os="windows")]
+unsafe fn alloc_clipboard_hglobal(data:&[u8])->Result<windows::Win32::Foundation::HGLOBAL,String>{
+    use windows::Win32::Foundation::{GlobalFree,HGLOBAL};
+    use windows::Win32::System::Memory::{GlobalAlloc,GlobalLock,GlobalUnlock,GMEM_MOVEABLE};
+
+    let hmem=GlobalAlloc(GMEM_MOVEABLE,data.len())
+        .map_err(|_|"分配剪贴板内存失败".to_string())?;
+    let p=GlobalLock(hmem);
+    if p.is_null(){
+        let _=GlobalFree(Some(hmem));
+        return Err("锁定剪贴板内存失败".into());
+    }
+    std::ptr::copy_nonoverlapping(data.as_ptr(),p as *mut u8,data.len());
+    let _=GlobalUnlock(hmem);
+    Ok(HGLOBAL(hmem.0))
+}
+
+#[cfg(target_os="windows")]
+fn is_localvault_secure_clipboard()->bool{
+    let Ok(exclude_monitor)=register_secure_clipboard_formats() else {return false};
+    use windows::Win32::System::DataExchange::{CloseClipboard,IsClipboardFormatAvailable,OpenClipboard};
+
+    unsafe{
+        if OpenClipboard(None).is_err(){return false;}
+        let guarded=IsClipboardFormatAvailable(exclude_monitor).is_ok();
+        let _=CloseClipboard();
+        guarded
+    }
+}
+
 #[tauri::command]
 fn clipboard_clear()->Result<(),String>{
     #[cfg(target_os="windows")]{
+        // 只清除 LocalVault 自己写入的安全剪贴板，避免误删用户随后复制的普通内容。
+        if !is_localvault_secure_clipboard(){return Ok(())}
         use windows::Win32::System::DataExchange::{OpenClipboard,EmptyClipboard,CloseClipboard};
         for _ in 0..3{
             unsafe{
                 if OpenClipboard(None).is_err(){std::thread::sleep(std::time::Duration::from_millis(60));continue}
+                // 在真正清空前再次确认安全标记仍属于当前剪贴板。
+                let guarded=register_secure_clipboard_formats().map(|exclude_monitor|{
+                    windows::Win32::System::DataExchange::IsClipboardFormatAvailable(exclude_monitor).is_ok()
+                }).unwrap_or(false);
+                if !guarded{
+                    let _=CloseClipboard();
+                    return Ok(());
+                }
                 let ok_empty=EmptyClipboard().is_ok();
                 let _=CloseClipboard();
                 if ok_empty{return Ok(())}
                 std::thread::sleep(std::time::Duration::from_millis(60));
             }
         }
-        Err("清空剪贴板失败（可能被其他程序占用）".into())
+        Err("清空 LocalVault 安全剪贴板失败（可能被其他程序占用）".into())
     }
     #[cfg(not(target_os="windows"))]{ Err("当前平台暂未实现剪贴板清空".into()) }
 }
+
 #[cfg(target_os="windows")]
 fn write_clipboard_text_win(text:&str)->Result<(),String>{
     use windows::Win32::System::DataExchange::{OpenClipboard,EmptyClipboard,CloseClipboard,SetClipboardData};
-    use windows::Win32::System::Memory::{GlobalAlloc,GlobalLock,GlobalUnlock,GMEM_MOVEABLE};
-    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Foundation::{GlobalFree,HANDLE,HGLOBAL};
     const CF_UNICODETEXT:u32=13;
+
+    let exclude_monitor=register_secure_clipboard_formats()?;
+
     let mut wide:Vec<u16>=text.encode_utf16().collect();
     wide.push(0);
+    let text_bytes=unsafe{
+        std::slice::from_raw_parts(wide.as_ptr() as *const u8,wide.len()*2)
+    };
+    let exclude_bytes=[1u8];
+
     for _ in 0..3{
         unsafe{
-            if OpenClipboard(None).is_err(){std::thread::sleep(std::time::Duration::from_millis(60));continue}
-            let _=EmptyClipboard();
-            let bytes=wide.len()*2;
-            let Ok(hmem)=GlobalAlloc(GMEM_MOVEABLE,bytes) else {let _=CloseClipboard();return Err("分配剪贴板内存失败".into())};
-            let p=GlobalLock(hmem);
-            if p.is_null(){let _=CloseClipboard();return Err("锁定剪贴板内存失败".into())}
-            std::ptr::copy_nonoverlapping(wide.as_ptr() as *const u8,p as *mut u8,bytes);
-            let _=GlobalUnlock(hmem);
-            let r=SetClipboardData(CF_UNICODETEXT,Some(HANDLE(hmem.0)));
+            if OpenClipboard(None).is_err(){
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                continue
+            }
+            if EmptyClipboard().is_err(){
+                let _=CloseClipboard();
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                continue
+            }
+
+            let Ok(h_text)=alloc_clipboard_hglobal(text_bytes) else {
+                let _=CloseClipboard();
+                return Err("分配剪贴板文本内存失败".into())
+            };
+            let Ok(h_exclude)=alloc_clipboard_hglobal(&exclude_bytes) else {
+                let _=GlobalFree(Some(HGLOBAL(h_text.0)));
+                let _=CloseClipboard();
+                return Err("分配剪贴板监控保护标记内存失败".into())
+            };
+
+            let mut transferred_text=false;
+            let mut transferred_exclude=false;
+
+            if SetClipboardData(CF_UNICODETEXT,Some(HANDLE(h_text.0))).is_ok(){
+                transferred_text=true;
+            }else{
+                let _=GlobalFree(Some(HGLOBAL(h_text.0)));
+            }
+
+            if transferred_text && SetClipboardData(exclude_monitor,Some(HANDLE(h_exclude.0))).is_ok(){
+                transferred_exclude=true;
+            }else if !transferred_exclude{
+                let _=GlobalFree(Some(HGLOBAL(h_exclude.0)));
+            }
+
+            let ok=transferred_text && transferred_exclude;
+            if !ok{
+                // 不能留下一个只含明文、却没有安全标记的密码剪贴板。
+                let _=EmptyClipboard();
+                let _=CloseClipboard();
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                continue
+            }
+
             let _=CloseClipboard();
-            if r.is_ok(){return Ok(())}
-            std::thread::sleep(std::time::Duration::from_millis(60));
+            return Ok(())
         }
     }
-    Err("写入剪贴板失败（可能被其他程序占用）".into())
+    Err("写入安全剪贴板失败（可能被其他程序占用）".into())
 }
+
 fn secure_copy_text(text:&str)->Result<(),String>{
     #[cfg(target_os="windows")]{
-        write_clipboard_text_win(text)?;
-        // 等待系统完成对刚复制内容的剪贴板历史记录
-        std::thread::sleep(std::time::Duration::from_millis(600));
-        // STA 线程清空剪贴板历史（ClearHistory 会同时清空当前剪贴板）
-        {
-            use windows::Win32::System::Com::{CoInitializeEx,CoUninitialize,COINIT_APARTMENTTHREADED};
-            use windows::ApplicationModel::DataTransfer::Clipboard;
-            let handle=std::thread::spawn(move||{
-                let _hr=unsafe{CoInitializeEx(None,COINIT_APARTMENTTHREADED)};
-                let ok=Clipboard::ClearHistory().unwrap_or(false);
-                unsafe{CoUninitialize()};
-                ok
-            });
-            let _=handle.join();
-        }
-        // 重新写入密码到当前剪贴板（此刻无用户输入上下文，不会被记录进历史）
+        // Windows 原生 Win+V/Cloud Clipboard 保护在写入剪贴板的同一时刻完成。
+        // 不再调用 Clipboard::ClearHistory()，避免删除用户原有的剪贴板历史。
         write_clipboard_text_win(text)?;
         Ok(())
     }
     #[cfg(not(target_os="windows"))]{ Err("当前平台暂未实现剪贴板写入".into()) }
 }
+
 #[tauri::command]
 fn copy_secure(text:String)->Result<(),String>{secure_copy_text(&text)}
 #[tauri::command] fn vault_status(state:State<'_,Arc<Mutex<VaultManager>>>)->Result<BootstrapStatus,String>{state.lock().map_err(|_|"state lock poisoned".to_string())?.status()}
 #[tauri::command] fn vault_list(state:State<'_,Arc<Mutex<VaultManager>>>)->Result<Vec<Entry>,String>{state.lock().map_err(|_|"state lock poisoned".to_string())?.list()}
-#[tauri::command] fn vault_create(master_password:String,confirm_password:String,state:State<'_,Arc<Mutex<VaultManager>>>,bridge:State<'_,Mutex<AutofillBridge>>,sync_bridge:State<'_,Mutex<SyncBridge>>)->Result<(),String>{
+#[tauri::command] fn vault_create(master_password:String,confirm_password:String,app:tauri::AppHandle,state:State<'_,Arc<Mutex<VaultManager>>>,bridge:State<'_,Mutex<AutofillBridge>>,sync_bridge:State<'_,Mutex<SyncBridge>>)->Result<(),String>{
     let r=state.lock().map_err(|_|"state lock poisoned".to_string())?.create(&master_password,&confirm_password);
     if r.is_ok(){
         // 创建后 Vault 即处于解锁状态：与解锁一致地启动浏览器填充（若已启用）与局域网同步服务
         if let Ok(mut b)=bridge.lock(){b.on_vault_unlocked(&*state);}
         if let Ok(mut b)=sync_bridge.lock(){b.on_vault_unlocked(&*state);}
+        // 解锁后的主界面：若已开启防截屏则应用窗口遮挡
+        sync_screen_protect(&app,&state);
     }
     r
 }
-#[tauri::command] fn vault_unlock(master_password:String,captcha:Option<String>,state:State<'_,Arc<Mutex<VaultManager>>>,bridge:State<'_,Mutex<AutofillBridge>>,sync_bridge:State<'_,Mutex<SyncBridge>>)->Result<Vec<Entry>,String>{
-    let r=state.lock().map_err(|_|"state lock poisoned".to_string())?.unlock(&master_password,captcha.as_deref());
+#[tauri::command] fn vault_unlock(master_password:String,captcha:Option<String>,recovery_code:Option<String>,recovery_answers:Option<Vec<String>>,app:tauri::AppHandle,state:State<'_,Arc<Mutex<VaultManager>>>,bridge:State<'_,Mutex<AutofillBridge>>,sync_bridge:State<'_,Mutex<SyncBridge>>)->Result<Vec<Entry>,String>{
+    let r=state.lock().map_err(|_|"state lock poisoned".to_string())?.unlock(&master_password,captcha.as_deref(),recovery_code.as_deref(),recovery_answers.as_deref());
     if r.is_ok(){
         // 浏览器填充：仅当总开关已启用时自动启动（用户手动开关驱动）
         if let Ok(mut b)=bridge.lock(){b.on_vault_unlocked(&*state);}
         // 局域网同步：解锁后自动启动服务（供手机客户端连接）
         if let Ok(mut b)=sync_bridge.lock(){b.on_vault_unlocked(&*state);}
+        // 解锁后的主界面：若已开启防截屏则应用窗口遮挡
+        sync_screen_protect(&app,&state);
     }
     r
 }
 #[tauri::command] fn vault_unlock_security_state(state:State<'_,Arc<Mutex<VaultManager>>>)->Result<UnlockSecurityState,String>{state.lock().map_err(|_|"state lock poisoned".to_string())?.security_state()}
 #[tauri::command] fn vault_refresh_captcha(state:State<'_,Arc<Mutex<VaultManager>>>)->Result<String,String>{let mut v=state.lock().map_err(|_|"state lock poisoned".to_string())?;let s=v.security_state()?;if !s.captcha_required{return Err("当前无需验证码".into())}Ok(v.new_captcha())}
+#[tauri::command] fn security_policy_get(state:State<'_,Arc<Mutex<VaultManager>>>)->Result<SecurityPolicy,String>{state.lock().map_err(|_|"state lock poisoned".to_string())?.security_policy()}
+#[tauri::command] fn security_policy_set(policy:SecurityPolicy,state:State<'_,Arc<Mutex<VaultManager>>>)->Result<SecurityPolicy,String>{state.lock().map_err(|_|"state lock poisoned".to_string())?.set_security_policy(&policy)}
 
 #[tauri::command] fn vault_save(entries:Vec<Entry>,state:State<'_,Arc<Mutex<VaultManager>>>)->Result<Vec<Entry>,String>{state.lock().map_err(|_|"state lock poisoned".to_string())?.save(&entries)}
-#[tauri::command] fn vault_lock(state:State<'_,Arc<Mutex<VaultManager>>>,bridge:State<'_,Mutex<AutofillBridge>>,sync_bridge:State<'_,Mutex<SyncBridge>>)->Result<(),String>{
+#[tauri::command] fn vault_lock(app:tauri::AppHandle,state:State<'_,Arc<Mutex<VaultManager>>>,bridge:State<'_,Mutex<AutofillBridge>>,sync_bridge:State<'_,Mutex<SyncBridge>>)->Result<(),String>{
     // 先关闭浏览器填充服务与局域网同步服务，再锁 Vault，避免锁定时出现服务线程/数据库锁顺序问题。
     // bridge 锁失败时也必须继续锁 Vault（安全核心），并向上报告服务未停止的异常。
     let mut problems=Vec::new();
@@ -229,6 +363,8 @@ fn copy_secure(text:String)->Result<(),String>{secure_copy_text(&text)}
         Err(_) => problems.push("局域网同步服务状态异常未停止"),
     };
     state.lock().map_err(|_|"state lock poisoned".to_string())?.lock()?;
+    // 锁定后解除窗口防截屏（解锁界面本身不遮挡，避免用户看不到自己的操作）
+    apply_screen_protect(&app,false);
     if !problems.is_empty() {
         return Err(format!("Vault 已锁定，但{}；请重启程序以确保安全", problems.join("、")));
     }
@@ -391,7 +527,7 @@ fn main(){
             .build(app).map_err(|e|e.to_string())?;
         Ok(())
     })
-    .invoke_handler(tauri::generate_handler![diagnostics_settings_get,diagnostics_settings_set,diagnostics_log_clear,diagnostics_log_path,vault_status,vault_list,vault_create,vault_unlock,vault_unlock_security_state,vault_refresh_captcha,detect_browsers,open_url_in_browser,clipboard_clear,copy_secure,vault_save,vault_lock,vault_entry_password,vault_copy_password,vault_duplicate_entry,vault_backup,backup_settings_get,backup_settings_set,backup_now,vault_restore,vault_backup_preview,vault_backup_verify,vault_backup_merge,vault_export,vault_import,bulk_import_template,bulk_import_read,trash_move,trash_list,trash_restore,trash_purge,category_update,category_delete,history_list,recovery_generate_code,recovery_enable,recovery_questions,recovery_verify,recovery_cancel,recovery_set_master,vault_verify_master,vault_update_security,category_list,category_create,category_reorder,autofill_status,autofill_toggle,autofill_begin_pair,autofill_unpair_all,sync_status,sync_begin_pair,sync_unpair_all])
+    .invoke_handler(tauri::generate_handler![diagnostics_settings_get,diagnostics_settings_set,diagnostics_log_clear,diagnostics_log_path,diagnostics_log_read,hello_status,hello_enable,hello_disable,hello_unlock,clipboard_settings_get,clipboard_settings_set,screen_protect_get,screen_protect_set,security_policy_get,security_policy_set,vault_status,vault_list,vault_create,vault_unlock,vault_unlock_security_state,vault_refresh_captcha,detect_browsers,open_url_in_browser,clipboard_clear,copy_secure,vault_save,vault_lock,vault_entry_password,vault_copy_password,vault_duplicate_entry,vault_backup,backup_settings_get,backup_settings_set,backup_now,vault_restore,vault_backup_preview,vault_backup_verify,vault_backup_merge,vault_export,vault_import,bulk_import_template,bulk_import_read,trash_move,trash_list,trash_restore,trash_purge,category_update,category_delete,history_list,recovery_generate_code,recovery_enable,recovery_questions,recovery_verify,recovery_cancel,recovery_set_master,vault_verify_master,vault_update_security,category_list,category_create,category_reorder,autofill_status,autofill_toggle,autofill_begin_pair,autofill_unpair_all,sync_status,sync_begin_pair,sync_unpair_all])
     .build(tauri::generate_context!()).expect("error while building LocalVault")
     .run(|app: &tauri::AppHandle, event: RunEvent|{
         if matches!(event,RunEvent::Exit){

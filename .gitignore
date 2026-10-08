@@ -14,3 +14,9 @@ SHA256SUMS.txt
 *.log
 *.bak*
 *.tmp
+# 内部文档（含敏感信息，不随源码发布）
+HANDOVER.md
+项目交接文档-LocalVault.txt
+SYNC-PLAN.md
+AUTOFILL-PLAN.md
+android-app/src-tauri/gen/android/app/src/main/assets/

@@ -39,11 +39,24 @@ export default function SettingsPage({ status, refresh, onLock }: Props) {
   const [secAnswers, setSecAnswers] = useState(["", "", ""]);
   const [recoveryCode, setRecoveryCode] = useState<string | null>(null);
 
-  // ---- 指纹解锁开关 ----
-  const [bioOn, setBioOn] = useState<boolean>(() => localStorage.getItem("lv_mobile_bio") === "1");
-  const toggleBio = (on: boolean) => {
-    setBioOn(on);
-    localStorage.setItem("lv_mobile_bio", on ? "1" : "0");
+  // ---- 指纹解锁开关（真实开关存在后端，解锁界面入口由 bioUsable 控制） ----
+  const [bioOn, setBioOn] = useState<boolean>(status.bioEnabled);
+  const [bioSwitching, setBioSwitching] = useState(false);
+  const toggleBio = async (on: boolean) => {
+    if (bioSwitching) return;
+    setBioSwitching(true);
+    setMsg(null);
+    try {
+      await api.mobileBiometricSet(on);
+      setBioOn(on);
+      await refresh();
+      setMsg({ ok: true, text: on ? "已开启指纹解锁：下次锁定后可用指纹快速解锁" : "已关闭指纹解锁：锁定后只能使用主密码解锁" });
+    } catch (e) {
+      setBioOn(status.bioEnabled);
+      setMsg({ ok: false, text: String(e) });
+    } finally {
+      setBioSwitching(false);
+    }
   };
   const [bioTestMsg, setBioTestMsg] = useState("");
   const [bioTesting, setBioTesting] = useState(false);
@@ -392,10 +405,11 @@ export default function SettingsPage({ status, refresh, onLock }: Props) {
             <div className="row-between">
               <span>指纹解锁</span>
               <label className="switch">
-                <input type="checkbox" checked={bioOn} onChange={(e) => toggleBio(e.target.checked)} />
+                <input type="checkbox" checked={bioOn} disabled={bioSwitching} onChange={(e) => void toggleBio(e.target.checked)} />
                 <span className="slider" />
               </label>
             </div>
+            {bioSwitching && <p className="muted">正在保存设置…</p>}
             {status.bioAvailable ? (
               <p className="muted">开启后，先正常解锁一次，之后锁定即可用指纹快速解锁；「立即锁定」后仍可用指纹解锁。App 退出重开也能用指纹解锁。</p>
             ) : (

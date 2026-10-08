@@ -1907,7 +1907,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "localvault-mobile"
-version = "1.9.4"
+version = "1.9.5"
 dependencies = [
  "argon2",
  "base64 0.22.1",

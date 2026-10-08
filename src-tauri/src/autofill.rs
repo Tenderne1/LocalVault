@@ -689,7 +689,145 @@ fn host_of(raw: &str) -> Option<String> {
     }
 }
 
-/// 子域双向匹配：条目 host 与页面 host 相同，或一方是另一方的子域。
+/// 站点别名组：同一站点的多个注册域互认（蓝奏云镜像域名、微博、淘宝天猫、网易邮箱等）。
+/// 组内域名及其任意子域，互相视为同一站点。
+const SITE_ALIAS_GROUPS: &[&[&str]] = &[
+    // 蓝奏云：完整域名清单（官网/分享/账号/下载直链，源自 blackmatrix7 LanZouYun 规则 36 个后缀）
+    &[
+        "baidupan.com",
+        "bakstotre.com",
+        "ilanzou.com",
+        "lanosso.com",
+        "lanpv.com",
+        "lanpw.com",
+        "lanrar.com",
+        "lanzn.com",
+        "lanzou.com",
+        "lanzoub.com",
+        "lanzouc.com",
+        "lanzoue.com",
+        "lanzouf.com",
+        "lanzoug.com",
+        "lanzouh.com",
+        "lanzoui.com",
+        "lanzouj.com",
+        "lanzouk.com",
+        "lanzoul.com",
+        "lanzoum.com",
+        "lanzouo.com",
+        "lanzoup.com",
+        "lanzouq.com",
+        "lanzous.com",
+        "lanzout.com",
+        "lanzouu.com",
+        "lanzouv.com",
+        "lanzouw.com",
+        "lanzoux.com",
+        "lanzouy.com",
+        "lanzov.com",
+        "lanzv.com",
+        "ulanzou.com",
+        "webgetstore.com",
+        "woozooo.com",
+        "wwentua.com",
+    ],
+    // 微博系
+    &["weibo.com", "weibo.cn"],
+    // 淘宝 / 天猫
+    &["taobao.com", "tmall.com"],
+    // 网易邮箱系
+    &["163.com", "126.com", "163.net", "yeah.net"],
+];
+
+/// 常见二级后缀：这些后缀下注册域需要往上取一级（如 example.com.cn 的注册域是 example.com.cn）。
+const SECOND_LEVEL_SUFFIXES: &[&str] = &[
+    "com.cn", "net.cn", "org.cn", "gov.cn", "edu.cn", "ac.cn",
+    "com.hk", "net.hk", "org.hk", "com.tw", "net.tw", "org.tw",
+    "com.sg", "net.sg", "org.sg", "com.my", "net.my", "org.my",
+    "co.jp", "ne.jp", "or.jp", "ac.jp", "co.kr", "or.kr", "ne.kr",
+    "com.au", "net.au", "org.au", "co.uk", "org.uk", "me.uk",
+    "com.br", "com.mx", "com.ar", "co.in", "co.id", "com.vn",
+    "com.ph", "com.th", "com.sg",
+];
+
+/// 简化注册域（eTLD+1 近似）：mail.qq.com → qq.com；xui.ptlogin2.qq.com → qq.com；
+/// example.com.cn → example.com.cn。无后缀命中时取最后两段。
+fn registrable_domain(host: &str) -> Option<String> {
+    let parts: Vec<&str> = host.split('.').filter(|s| !s.is_empty()).collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let n = parts.len();
+    let last_two = format!("{}.{}", parts[n - 2], parts[n - 1]);
+    if n >= 3 && SECOND_LEVEL_SUFFIXES.contains(&last_two.as_str()) {
+        Some(format!("{}.{}", parts[n - 3], last_two))
+    } else {
+        Some(last_two)
+    }
+}
+
+/// 判断 host 是否命中任一站点别名组，返回组下标。
+fn alias_group_of(host: &str) -> Option<usize> {
+    for (gi, group) in SITE_ALIAS_GROUPS.iter().enumerate() {
+        for base in group.iter() {
+            if host == *base || host.ends_with(&format!(".{}", base)) {
+                return Some(gi);
+            }
+        }
+    }
+    None
+}
+
+/// 简易 glob 匹配：`*` 匹配任意字符序列（含空），`?` 匹配单个字符。
+/// 用于条目 URL 中的通配符（如 `*lanzou*.*` 匹配蓝奏云所有镜像域名）。
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    let (mut pi, mut ti) = (0usize, 0usize);
+    let mut star: Option<usize> = None;
+    let mut mark = 0usize;
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some(pi);
+            mark = ti;
+            pi += 1;
+        } else if let Some(sp) = star {
+            pi = sp + 1;
+            mark += 1;
+            ti = mark;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
+/// 通配符模式是否可用：去掉 `*`/`?` 后必须至少剩 2 个字符，
+/// 且不是纯 `*`/`?`/`*.*` 这类可匹配任意站点的过宽模式（安全兜底）。
+fn wildcard_usable(pattern: &str) -> bool {
+    let stripped: String = pattern.chars().filter(|c| *c != '*' && *c != '?').collect();
+    if stripped.len() < 2 {
+        return false;
+    }
+    if stripped == "*" || stripped == ".*" {
+        return false;
+    }
+    true
+}
+
+/// 子域 / 注册域 / 站点别名组 / 通配符四层匹配：
+/// 1. host 完全相同；
+/// 2. 一方是另一方的子域（mail.qq.com 与 wx.mail.qq.com）；
+/// 3. 注册域相同（mail.qq.com 与 xui.ptlogin2.qq.com——QQ 邮箱登录框 iframe 域名）；
+/// 4. 同属一个站点别名组（蓝奏云镜像域名、微博 weibo.com/weibo.cn 等）；
+/// 5. 条目 URL 含通配符（`*lanzou*.*`），对页面 host 做 glob 匹配；
+///    `*.example.com` 额外匹配 `example.com` 本身。
 fn url_matches(entry_url: &str, page_host: &str) -> bool {
     let Some(entry_host) = host_of(entry_url) else {
         return false;
@@ -704,6 +842,27 @@ fn url_matches(entry_url: &str, page_host: &str) -> bool {
         || page_host.ends_with(&format!(".{entry_host}"))
     {
         return true;
+    }
+    if let (Some(a), Some(b)) = (registrable_domain(&entry_host), registrable_domain(page_host)) {
+        if a == b {
+            return true;
+        }
+    }
+    if let (Some(a), Some(b)) = (alias_group_of(&entry_host), alias_group_of(page_host)) {
+        if a == b {
+            return true;
+        }
+    }
+    if (entry_host.contains('*') || entry_host.contains('?')) && wildcard_usable(&entry_host) {
+        if glob_match(&entry_host, page_host) {
+            return true;
+        }
+        // `*.example.com` 语义上同时匹配 `example.com` 本身
+        if let Some(rest) = entry_host.strip_prefix("*.") {
+            if rest == page_host {
+                return true;
+            }
+        }
     }
     false
 }
@@ -732,13 +891,75 @@ mod tests {
         assert!(url_matches("https://example.com", "login.example.com"));
         assert!(url_matches("https://mail.example.com", "example.com"));
         assert!(url_matches("https://a.b.example.com", "b.example.com"));
-        // 平级子域（a.b.example.com 与 c.example.com）不是对方的子域，不匹配（安全优先）
-        assert!(!url_matches("https://a.b.example.com", "c.example.com"));
+        // 平级子域（a.b.example.com 与 c.example.com）不是对方的子域，但注册域相同（example.com），可匹配
+        assert!(url_matches("https://a.b.example.com", "c.example.com"));
         assert!(url_matches("https://example.com:8443/x", "sub.example.com"));
         assert!(!url_matches("https://example.com", "notexample.com"));
         assert!(!url_matches("https://example.com", "example.com.evil.com"));
         assert!(!url_matches("", "example.com"));
         assert!(!url_matches("https://example.com", ""));
+    }
+
+    #[test]
+    fn registrable_domain_matching() {
+        // QQ 邮箱登录框在 xui.ptlogin2.qq.com（与 mail.qq.com 是兄弟子域），注册域同为 qq.com
+        assert!(url_matches("https://mail.qq.com", "xui.ptlogin2.qq.com"));
+        assert!(url_matches("https://wx.mail.qq.com", "mail.qq.com"));
+        assert!(url_matches("https://login.qq.com", "xui.ptlogin2.qq.com"));
+        // 二级后缀：example.com.cn 的注册域是 example.com.cn
+        assert!(url_matches("https://a.example.com.cn", "b.example.com.cn"));
+        // 不同注册域不匹配
+        assert!(!url_matches("https://qq.com", "qq.com.cn"));
+        assert!(!url_matches("https://example.com", "example.com.cn"));
+        // 注册域相同但不在同一站点（仅作安全兜底：不因注册域放宽匹配 evil 域名）
+        assert!(!url_matches("https://qq.com", "qq.com.evil.com"));
+    }
+
+    #[test]
+    fn alias_group_matching() {
+        // 蓝奏云镜像域名互认
+        assert!(url_matches("https://www.lanzou.com", "wws.lanzoui.com"));
+        assert!(url_matches("https://lanzou.com", "lanzoux.com"));
+        assert!(url_matches("https://macoshome.lanzoux.com/abc", "lanzoui.com"));
+        assert!(url_matches("https://wws.lanzoui.com", "lanzouf.com"));
+        // 蓝奏云账号域（woozooo.com 登录）与分享域互认
+        assert!(url_matches("https://accounts.woozooo.com", "www.lanzou.com"));
+        assert!(url_matches("https://pc.woozooo.com/mydisk.php", "wws.lanzoui.com"));
+        assert!(url_matches("https://www.ilanzou.com", "accounts.woozooo.com"));
+        // 下载直链域名
+        assert!(url_matches("https://lanzou.com", "wwentua.com"));
+        // 微博
+        assert!(url_matches("https://weibo.com", "weibo.cn"));
+        // 淘宝 / 天猫
+        assert!(url_matches("https://login.taobao.com", "tmall.com"));
+        // 网易邮箱
+        assert!(url_matches("https://mail.163.com", "mail.126.com"));
+        // 不在别名组的无关域名不匹配
+        assert!(!url_matches("https://lanzou.com", "lanzou-evilsite.com"));
+        assert!(!url_matches("https://weibo.com", "weiboo.com"));
+    }
+
+    #[test]
+    fn wildcard_matching() {
+        // 通配符匹配蓝奏云镜像域名（图2 形式 *lanzou*.*）
+        assert!(url_matches("https://*lanzou*.*", "www.lanzou.com"));
+        assert!(url_matches("https://*lanzou*.*", "wws.lanzoui.com"));
+        assert!(url_matches("https://*lanzou*.*", "lanzoux.com"));
+        assert!(url_matches("https://*lanzou*.*", "ilanzou.com"));
+        // 其他站点通配符
+        assert!(url_matches("https://*.qq.com", "xui.ptlogin2.qq.com"));
+        assert!(url_matches("https://*.qq.com", "mail.qq.com"));
+        // *.example.com 同时匹配 example.com 本身
+        assert!(url_matches("https://*.example.com", "example.com"));
+        assert!(url_matches("https://*.example.com", "login.example.com"));
+        // 通配符不匹配无关站点
+        assert!(!url_matches("https://*lanzou*.*", "example.com"));
+        assert!(!url_matches("https://*lanzou*.*", "qq.com"));
+        // 过宽模式被拒绝
+        assert!(!url_matches("https://*", "example.com"));
+        assert!(!url_matches("https://*.*", "example.com"));
+        // 通配符与其他层组合
+        assert!(url_matches("https://wws.lanzoui.com", "www.lanzou.com")); // 别名组
     }
 
     #[test]

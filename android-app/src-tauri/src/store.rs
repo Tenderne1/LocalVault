@@ -6,7 +6,7 @@
 // 解锁后整个明文常驻内存（手机端自身内存 dump 风险与桌面端同量级）；锁定清空。
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::crypto::{self, KEY_LEN};
 
@@ -110,7 +110,6 @@ pub struct MobileStore {
     /// 指纹解锁缓存密钥（锁定后保留在内存；立即锁定/App 退出即清空）
     bio_key: Option<[u8; KEY_LEN]>,
 }
-
 /// 密保文件（独立于主密钥存储，供忘记主密码时验证身份后重置）
 /// 文件：vault.mobile.security（明文 JSON，仅存哈希与密保问题，不存答案原文）
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -148,6 +147,46 @@ impl MobileStore {
         self.data.is_some()
     }
 
+    /// 指纹解锁开关配置文件（独立于加密缓存；仅存开关，不存任何密钥）
+    fn bio_settings_path(&self) -> PathBuf {
+        self.path.parent().unwrap_or_else(|| Path::new(".")).join("bio-settings.json")
+    }
+
+    /// 用户是否开启指纹解锁（默认关闭；未开启时绝不产生/使用指纹会话）
+    pub fn bio_enabled(&self) -> bool {
+        std::fs::read(self.bio_settings_path())
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .and_then(|v| v.get("enabled").and_then(|x| x.as_bool()))
+            .unwrap_or(false)
+    }
+
+    /// 设置指纹解锁开关。enabled=true 时要求设备支持生物识别；
+    /// 关闭时同时清空内存中的指纹会话（持久化 Keystore 由调用方清除）。
+    pub fn set_bio_enabled(&mut self, enabled: bool) -> Result<(), String> {
+        if enabled && !crate::android_jni::biometric_available() {
+            return Err("当前设备未检测到可用指纹，请先在系统设置中录入指纹".into());
+        }
+        let path = self.bio_settings_path();
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("创建配置目录失败：{e}"))?;
+        }
+        let json = serde_json::json!({ "enabled": enabled });
+        let tmp = path.with_extension("json.new");
+        std::fs::write(&tmp, serde_json::to_vec_pretty(&json).map_err(|e| e.to_string())?)
+            .map_err(|e| format!("写入配置失败：{e}"))?;
+        if path.exists() {
+            let _ = std::fs::remove_file(&path);
+        }
+        std::fs::rename(&tmp, &path).map_err(|e| format!("写入配置失败：{e}"))?;
+        if !enabled {
+            if let Some(mut k) = self.bio_key.take() {
+                crypto::zeroize_key(&mut k);
+            }
+        }
+        Ok(())
+    }
+
     /// 首次设置主密码并初始化（不要求密码规则之外的额外条件）
     pub fn setup(&mut self, password: &str, confirm: &str) -> Result<(), String> {
         crypto::validate_new_master_password(password)?;
@@ -171,7 +210,10 @@ impl MobileStore {
             .map_err(|e| format!("写入缓存失败：{e}"))?;
         self.key = Some(key);
         self.data = Some(empty);
-        self.bio_key = Some(key);
+        // 指纹会话仅在用户已开启指纹解锁时才保留（未开启时不产生指纹解锁能力）
+        if self.bio_enabled() {
+            self.bio_key = Some(key);
+        }
         Ok(())
     }
 
@@ -195,7 +237,10 @@ impl MobileStore {
             serde_json::from_slice(&plain).map_err(|_| "缓存解析失败，可能是主密码错误".to_string())?;
         self.key = Some(key);
         self.data = Some(data);
-        self.bio_key = Some(key);
+        // 指纹会话仅在用户已开启指纹解锁时才保留（未开启时不产生指纹解锁能力）
+        if self.bio_enabled() {
+            self.bio_key = Some(key);
+        }
         Ok(())
     }
 

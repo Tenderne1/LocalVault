@@ -62,40 +62,49 @@
     el.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
-  // 在同一表单/容器内找账号输入框并填充
+  // 判断输入框是否像账号框（宽松关键词，覆盖 QQ 登录框 name="u" 等无特征名）
+  function looksLikeUsername(c) {
+    if (!(c instanceof HTMLInputElement)) return false;
+    const t = (c.type || "").toLowerCase();
+    if (t === "password" || t === "hidden" || t === "submit" || t === "button" || t === "checkbox" || t === "radio" || t === "file") return false;
+    if (t === "email" || t === "tel") return true;
+    const s = ((c.name || "") + " " + (c.id || "") + " " + (c.autocomplete || "") + " " + (c.placeholder || "")).toLowerCase();
+    return ["user", "account", "login", "mail", "email", "username", "mobile", "phone", "qq", "uid", "账号", "邮箱", "用户名", "手机"].some((k) => s.includes(k));
+  }
+
+  // 排除验证码 / 搜索类输入框，避免错填
+  function looksLikeNoise(c) {
+    if (!(c instanceof HTMLInputElement)) return false;
+    const s = ((c.name || "") + " " + (c.id || "") + " " + (c.placeholder || "") + " " + (c.autocomplete || "")).toLowerCase();
+    return ["code", "captcha", "verify", "yzm", "验证码", "图形码", "search", "query", "keyword", "搜索", "token", "csrf"].some((k) => s.includes(k));
+  }
+
+  // 在密码框所在文档内找账号输入框：先同容器，再逐级向上扩到整个表单区域
   function fillForm(input, entry) {
-    const container = input.form || input.closest("form") || input.parentElement;
     let usernameInput = null;
-    if (container) {
-      const candidates = container.querySelectorAll('input[type="text"],input[type="email"],input[name],input[autocomplete="username"]');
-      for (const c of candidates) {
-        if (c === input) continue;
-        const t = (c.type || "").toLowerCase();
-        if (t === "password") continue;
-        const name = ((c.name || "") + " " + (c.id || "") + " " + (c.autocomplete || "")).toLowerCase();
-        if (
-          t === "email" ||
-          name.includes("user") ||
-          name.includes("account") ||
-          name.includes("login") ||
-          name.includes("mail") ||
-          name.includes("name") ||
-          name.includes("username") ||
-          name.includes("mobile") ||
-          name.includes("phone")
-        ) {
-          usernameInput = c;
-          break;
-        }
+    const seen = new Set();
+    const candidates = [];
+    let scope = input.form || input.closest("form") || input.parentElement;
+    const root = input.ownerDocument;
+    let hops = 0;
+    while (scope && scope !== root.documentElement && scope !== root.body && hops < 8) {
+      hops++;
+      const found = Array.from(scope.querySelectorAll('input[type="text"],input[type="email"],input[type="tel"],input[name],input[autocomplete="username"]'));
+      for (const c of found) {
+        if (c === input || c.type === "password") continue;
+        if (looksLikeNoise(c)) continue;
+        if (seen.has(c)) continue;
+        seen.add(c);
+        candidates.push(c);
       }
-      if (!usernameInput) {
-        for (const c of candidates) {
-          const t = (c.type || "").toLowerCase();
-          if (t === "password" || c === input) continue;
-          usernameInput = c;
-          break;
-        }
-      }
+      // 关键词命中账号框则立即采用
+      const hit = candidates.find(looksLikeUsername);
+      if (hit) { usernameInput = hit; break; }
+      scope = scope.parentElement;
+    }
+    // 无关键词命中：优先 email/tel 类型，其次取第一个候选
+    if (!usernameInput && candidates.length) {
+      usernameInput = candidates.find((c) => (c.type || "").toLowerCase() === "email") || candidates.find((c) => (c.type || "").toLowerCase() === "tel") || candidates[0];
     }
     if (usernameInput && entry.username) setVal(usernameInput, entry.username);
     setVal(input, entry.password);
@@ -337,8 +346,11 @@
 
     async function showFrameList(uid, frameEl, btn) {
       try {
-        // 用顶层 URL 匹配用户保存的站点地址（iframe 内常为登录域名）
-        const resp = await sendMatch(location.href);
+        // 优先用登录 iframe 自身 URL 匹配（iframe 内常为真正登录域名，如 QQ 邮箱 xui.ptlogin2.qq.com）；
+        // 若 iframe URL 未捕获到，回退顶层 URL。
+        const rec = FRAME_BUTTONS.get(uid);
+        const matchUrl = (rec && rec.href) || location.href;
+        const resp = await sendMatch(matchUrl);
         if (!resp || !resp.ok) {
           showError((resp && resp.body && resp.body.error) || "无法连接填充服务", btn);
           return;
@@ -353,7 +365,7 @@
           rowBtn.addEventListener("click", async () => {
             const entry = entries[Number(rowBtn.dataset.idx)];
             removeList();
-            const fill = await chrome.runtime.sendMessage({ type: "fill", url: location.href, entryId: entry.id });
+            const fill = await chrome.runtime.sendMessage({ type: "fill", url: matchUrl, entryId: entry.id });
             if (!fill || !fill.ok) {
               showError((fill && fill.body && fill.body.error) || "填充失败", btn);
               return;
@@ -397,6 +409,8 @@
           rec.rect = d;
           rec.frameEl = frameEl;
         }
+        // 记录 iframe 自身 URL：匹配时优先用登录 iframe 的域名（如 QQ 邮箱的 xui.ptlogin2.qq.com）
+        if (d.href) rec.href = d.href;
         requestAnimationFrame(() => positionFrameButton(rec));
       } else if (d.type === "frame-password-remove") {
         const rec = FRAME_BUTTONS.get(d.uid);
@@ -510,7 +524,7 @@
         const r = inp.getBoundingClientRect();
         try {
           window.parent.postMessage(
-            { source: MSG_SOURCE, type: "frame-password", uid, x: r.x, y: r.y, w: r.width, h: r.height },
+            { source: MSG_SOURCE, type: "frame-password", uid, x: r.x, y: r.y, w: r.width, h: r.height, href: location.href },
             "*"
           );
         } catch (e) { /* 忽略 */ }
@@ -525,11 +539,54 @@
       }
     }
 
+    // 在当前文档中查找消息来源 iframe（跨域仅比较引用）
+    function findChildFrame(win) {
+      for (const f of document.querySelectorAll("iframe")) {
+        try {
+          if (f.contentWindow === win) return f;
+        } catch (e) { /* 跨域仅比较引用 */ }
+      }
+      return null;
+    }
+
     window.addEventListener("message", (e) => {
       const d = e.data;
-      if (!d || d.source !== MSG_SOURCE || d.type !== "frame-fill") return;
-      const input = FRAME_PWD.get(d.uid);
-      if (input) fillForm(input, { username: d.username, password: d.password });
+      if (!d || d.source !== MSG_SOURCE) return;
+      // 1) 子 iframe 上报密码框坐标：累加本层偏移后继续向上转发（支持多层嵌套 iframe，
+      //    如 QQ 邮箱 mail.qq.com → graph.qq.com 授权壳 → xui.ptlogin2.qq.com 密码框）
+      if (d.type === "frame-password" || d.type === "frame-password-remove") {
+        const child = findChildFrame(e.source);
+        if (d.type === "frame-password") {
+          const fr = child ? child.getBoundingClientRect() : { left: 0, top: 0 };
+          try {
+            window.parent.postMessage(
+              { source: MSG_SOURCE, type: "frame-password", uid: d.uid, x: d.x + fr.left, y: d.y + fr.top, w: d.w, h: d.h, href: d.href },
+              "*"
+            );
+          } catch (err) { /* 忽略 */ }
+        } else {
+          try {
+            window.parent.postMessage({ source: MSG_SOURCE, type: "frame-password-remove", uid: d.uid }, "*");
+          } catch (err) { /* 忽略 */ }
+        }
+        return;
+      }
+      // 2) 填充指令：本层若有对应密码框则执行填充，否则向下转发给所有子 iframe
+      if (d.type === "frame-fill") {
+        const input = FRAME_PWD.get(d.uid);
+        if (input) {
+          fillForm(input, { username: d.username, password: d.password });
+          return;
+        }
+        for (const f of document.querySelectorAll("iframe")) {
+          try {
+            f.contentWindow.postMessage(
+              { source: MSG_SOURCE, type: "frame-fill", uid: d.uid, username: d.username, password: d.password },
+              "*"
+            );
+          } catch (err) { /* 忽略 */ }
+        }
+      }
     });
 
     window.addEventListener("scroll", report, { passive: true });
